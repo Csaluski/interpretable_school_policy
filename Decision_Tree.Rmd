@@ -1,0 +1,101 @@
+---
+title: "Decision Tree Try Out"
+author: "Melvin Seinen"
+date: "1/4/2022"
+output: word_document
+---
+
+```{r}
+
+install.packages('caret')
+install.packages('rpart')
+install.packages('rpart.plot')
+install.packages('ROCR')
+# Load the packages.
+library(caret) # Functions to streamline model training and tuning processes
+library(rpart) # Implementation of CART analysis algorithm
+library(rpart.plot) # Procedure to plot the results of rpart
+library(ROCR)
+
+
+load('eclsk.rdata')
+
+#Kindergarten measures of specific math knowledge (CountNumShp, RelativeSize,
+#OrdinalSeq, and AddSubtract)
+#Kindergarten measures of language knowledge (LetterRecog, BeginSounds,
+#EndSounds, and SightWords)
+#Kindergarten measures of broad knowledge (LiteracyARS, MathARS, and
+#GeneralARS).
+#The CART analysis uses these independent variables to predict the indicator for scoring
+#Below Proficient on the state math assessment at the end of grade 3 (AtRisk),
+
+
+# Use the load() command to read in the data.
+load('eclsk.rdata') # Change the file name to access your data file.
+# Create a copy of your data in mydata to allow you to use the remaining code more easily.
+mydata <- eclsk # Change the dataset name to access your data.
+# Assign the outcome to depvar, the dependent variable.
+depvar <- 'AtRisk' # Change the dependent variable to your outcome of interest.
+# Define the set of independent variables for the analysis.
+indepvar <- c( # Change the independent variables to your characteristics.
+'LiteracyARS','MathARS','GeneralARS','LetterRecog','BeginSounds',
+'EndSounds','SightWords','CountNumShp','RelativeSize','OrdinalSeq',
+'AddSubtract')
+# Use dim() to show the dimensions of the data.
+dim(mydata)
+
+set.seed(101010)
+
+
+train_index <- as.vector(createDataPartition(mydata[[depvar]],p=.8,list=FALSE,times=1))
+
+
+mytrain <- mydata[train_index, ]
+mytest <- mydata[-train_index, ]
+
+
+myformula <- as.formula(paste(depvar,paste(indepvar,collapse=' + '),sep=' ~ '))
+# Use trainControl() to define parameters for train().
+mycontrol <- trainControl(
+method = 'repeatedcv', # Repeated cross-validation
+number = 10, # Number of folds (k)
+repeats = 10, # Number of repeats (n) of cross-validation
+savePredictions = 'final', # Save predictions for best tuning parameters
+classProbs = TRUE, # Compute probabilities for each class
+selectionFunction = 'oneSE', # Select model within one standard error of best
+summaryFunction = twoClassSummary # Provide ROC, sensitivity, and specificity
+)
+
+myformula
+mycontrol
+# Use caret’s train() function to tune using cp and select using ROC.
+mytree <- train(
+myformula, # Use the formula defined above
+data = mytrain, # Use the subset of data for training
+method = 'rpart', # Use the rpart procedure for CART analysis
+trControl = mycontrol, # Use the controls defined above
+tuneLength = 10, # Try 10 values of the complexity parameter (cp)
+metric='ROC'
+)
+
+mytree
+
+mytree$finalModel
+
+
+rpart.plot(
+mytree$finalModel, # The optimal model from the CART analysis
+box.palette = 'lightblue1', # Box color
+type = 0, # Draw labels for each split and node
+leaf.round = 0, # Do not use rounded terminal nodes
+nn = T, # Include node numbers
+branch.col = 'lightblue2', # Color of the branches
+branch.type = 5, # Branch width based on share of students
+extra = 107, # Show % in node at risk and % of all students
+xflip = T, # Flip the tree horizontally
+under = T, # Place overall percentage under leaf
+cex = 1 # Size of text
+)
+
+```
+

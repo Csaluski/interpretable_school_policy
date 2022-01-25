@@ -1,0 +1,33 @@
+---
+title: "Interpretable Analysis of School Policy Decisions"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(openxlsx)
+
+coach.file <- "Data Sources/Coaching logs Fall 2017- Spring 2021.xlsx"
+coach.data <- as.data.table(read.xlsx(coach.file))
+
+nces.file <- "Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
+nces.data <- as.data.table(read.xlsx(nces.file))
+# nces.data <- fread(nces.file)
+
+cwis.file <- "Data Sources/cwis_survey data updated.xlsx"
+cwis.data <- as.data.table(read.xlsx(cwis.file))
+```
+
+```{r}
+interested.coach.cols <- c("State.District.ID", "Date.of.Event/Visit", "Interaction.Type", "Consultants")
+interested.cwis.cols <- c("State.District.ID", "ETL.AVERAGE")
+
+interested.coach.data <- coach.data[,..interested.coach.cols]
+interested.cwis.data <- cwis.data[,..interested.cwis.cols]
+
+interested.coach.data[, "Date.of.Event/Visit" := convertToDate(sapply(coach.data[, "Date.of.Event/Visit"], as.numeric))]
+
+joined.data <- nces.data[cwis.data, nomatch=0, on="State.District.ID"]
+```
