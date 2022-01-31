@@ -1,0 +1,92 @@
+---
+title: "Interpretable Analysis of School Policy Decisions"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(openxlsx)
+library(dplyr)
+library(stringr)
+library(purrr)
+
+nces.file <- "Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
+nces.data <- as.data.table(read.xlsx(nces.file))
+# nces.data <- fread(nces.file)
+
+# remove asterisks in column names, they cause issues with code
+
+# find columns with stars in name
+nces.col.names <- names(nces.data)
+findStar <- function(curr) {
+  grepl("\\*", curr)
+}
+
+nces.replace.cols <- map(nces.col.names, findStar)
+
+# loop across them, setting the column name to the column name without the stars
+for (i in 1:length(nces.replace.cols)) {
+  if (nces.replace.cols[[i]] == TRUE) {
+    old.name <- nces.col.names[i]
+    new.name <- gsub("\\*", "", old.name)
+    setnames(nces.data, old.name, new.name)
+  }
+}
+
+# read numeric columns as numeric
+
+
+```
+
+```{r}
+nces.computed.cols <- list()
+
+nces.locale.categories <- unique(nces.data[["Locale"]])
+
+# we will probably want this wide data
+nces.computed.cols[["locale.cols"]] <- dcast(nces.data, 
+  State.District.ID ~ Locale)
+
+# but we can also make it long
+# count(nces.data, c("State.District.ID", "Locale"))
+
+# for every numeric column, compute the summary statistics,
+# grouped by State.District.ID
+nces.numeric.cols <- c("Students", "Teachers", "Student.Teacher.Ratio", "Free.Lunch", "Reduced.Lunch", "Free/Reduced.Rate")
+
+numeric.col.ops <- c("min", "max", "mean", "sd", "median")
+
+for (col in nces.numeric.cols) {
+  nces.data[[col]] <- as.numeric(nces.data[[col]])
+  for (op in numeric.col.ops) {
+    op.call <- function(x) {
+      fun <- get(op)
+      fun(x)
+    }
+    col.name <- paste(col, ".", op, sep="")
+    # Should we ignore NA here?
+    nces.computed.cols[[col.name]] <- 
+      nces.data[, op.call(na.omit(get(col))), by=State.District.ID]
+    setnames(nces.computed.cols[[col.name]], "V1", col.name)
+  }
+}
+
+nces.computed.dt <- {
+  nces.computed.cols %>% reduce(inner_join, by = "State.District.ID")
+  }
+
+write.csv(nces.computed.dt, "./Data Sources CSV/nces.computed.csv")
+
+
+# interested.coach.cols <- c("State.District.ID", "Date.of.Event/Visit", "Interaction.Type", "Consultants")
+# interested.cwis.cols <- c("State.District.ID", "ETL.AVERAGE")
+
+# interested.coach.data <- coach.data[,..interested.coach.cols]
+# interested.cwis.data <- cwis.data[,..interested.cwis.cols]
+
+# interested.coach.data[, "Date.of.Event/Visit" := convertToDate(sapply(coach.data[, "Date.of.Event/Visit"], as.numeric))]
+
+# joined.data <- nces.data[cwis.data, nomatch=0, on="State.District.ID"]
+```
