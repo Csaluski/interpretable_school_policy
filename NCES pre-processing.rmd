@@ -11,15 +11,76 @@ library(openxlsx)
 library(dplyr)
 library(stringr)
 library(purrr)
+```
 
+Processing of yearly NCES data tables, not yet functioning.
+```{r}
+
+nces.base.location <- "Data Sources/NCES Data - District-Building Characteristics/NCES annual data/"
+
+nces.file.vec <- list.files(nces.base.location)
+
+# not all data sets have same columns, so this method of renaming doesn't work
+nces.cols <- c("School Name",
+"State Name [Public School] Latest available year",
+"Agency ID - NCES Assigned [Public School] Latest available year",
+"School ID - NCES Assigned [Public School] Latest available year",
+"School Name [Public School]",
+"School Type [Public School]",
+"Charter School [Public School]",
+"Urban-centric Locale [Public School]",
+"School-wide Title I [Public School]",
+"Title I Eligible School [Public School]",
+"State School ID [Public School]",
+"National School Lunch Program [Public School]",
+"Lowest Grade Offered [Public School]",
+"Highest Grade Offered [Public School]",
+"Total Students, All Grades (Excludes AE) [Public School]",
+"Total Students, All Grades (Includes AE) [Public School]",
+"Free Lunch Eligible [Public School]",
+"Direct Certification [Public School]",
+"Reduced-price Lunch Eligible Students [Public School]",
+"Free and Reduced Lunch Students [Public School]",
+"Full-Time Equivalent (FTE) Teachers [Public School]",
+"Pupil/Teacher Ratio [Public School]")
+
+getYearVec <- function(file.vec) {
+  temp.list <- list()
+  for (file in file.vec) {
+    temp.list[[file]] <- str_split(file, "_")[[1]][5]
+  }
+  as.numeric(temp.list)
+}
+
+
+combine_nces_files <- function(file.vec, base.location) {
+  temp.dt.list <- list()
+  nces.year.vec <- getYearVec(file.vec)
+  for (file.index in 1:length(file.vec)) {
+    file.loc <- paste(base.location, file.vec[[file.index]], sep = "")
+    curr.dt <- as.data.table(read.xlsx(file.loc, startRow = 7))
+    print(nces.cols)
+    print(names(curr.dt))
+    setnames(curr.dt, old=names(curr.dt), new=nces.cols)
+    curr.dt[, year := nces.year.vec[[file.index]]]
+    print(str(curr.dt))
+    temp.dt.list[[file.index]] <- curr.dt
+  }
+  temp.dt.list
+}
+# This has issues right now, need to make column names consistent between files
+# nces.yearly.dt <- combine_nces_files(nces.file.vec, nces.base.location)
+```
+
+Read NCES data 
+```{r}
 nces.file <- "Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
-nces.data <- as.data.table(read.xlsx(nces.file))
-# nces.data <- fread(nces.file)
+nces.dt <- as.data.table(read.xlsx(nces.file))
 
 # remove asterisks in column names, they cause issues with code
 
 # find columns with stars in name
-nces.col.names <- names(nces.data)
+nces.col.names <- names(nces.dt)
 findStar <- function(curr) {
   grepl("\\*", curr)
 }
@@ -31,23 +92,51 @@ for (i in 1:length(nces.replace.cols)) {
   if (nces.replace.cols[[i]] == TRUE) {
     old.name <- nces.col.names[i]
     new.name <- gsub("\\*", "", old.name)
-    setnames(nces.data, old.name, new.name)
+    setnames(nces.dt, old.name, new.name)
   }
 }
+```
 
-# read numeric columns as numeric
+Load implementation data from Melvin's work, RQ_IC file aggregates CWIS survey results (implementation checklist)
+```{r}
+ic.file <- "Data Sources/Data Research Questions/RQ_IC.csv.xlsx"
+
+ic.dt <- as.data.table(read.xlsx(ic.file))
+ic.district.cols <- unique(ic.dt[["District.Code"]])
+valid.ic.rows <- grepl("MO", ic.district.cols)
+ic.district.cols <- ic.district.cols[valid.ic.rows]
+# subset nces.dt to rows in DCI program, 
+# i.e. those who provide integration checklists.
+nces.dt <- nces.dt[ic.district.cols, on = .(State.District.ID)]
+
+setnames(ic.dt, "District.Code", "State.District.ID")
+
+cwis.avg.file <- "Data Sources/Data Research Questions/CWIS_avg_per_domain_per_district.csv.xlsx"
+cwis.avg.dt <- as.data.table(read.xlsx(cwis.avg.file))
+cwis.avg.dt <- cwis.avg.dt[ic.district.cols, on = .(State.District.ID)]
 
 
+sessions <- unique(cwis.avg.dt$session)
+session.year.ranges <- c(
+  sessions[1], sessions[2:3], sessions[4:6], sessions[7],
+  sessions[8:9], sessions[10]
+)
 ```
 
 ```{r}
 nces.computed.cols <- list()
 
-nces.locale.categories <- unique(nces.data[["Locale"]])
+nces.locale.categories <- unique(nces.dt[["Locale"]])
 
 # we will probably want this wide data
-nces.computed.cols[["locale.cols"]] <- dcast(nces.data, 
-  State.District.ID ~ Locale)
+# By observation, there is a single locale per district ID, 
+# so we can not use one-hot encoding for our ML models.
+# We may want to see if this can be broken down to a boolean variable,
+# city vs rural
+nces.computed.cols[["locale.cols"]] <- dcast(
+  nces.dt,
+  State.District.ID ~ Locale
+)
 
 # but we can also make it long
 # count(nces.data, c("State.District.ID", "Locale"))
@@ -59,27 +148,34 @@ nces.numeric.cols <- c("Students", "Teachers", "Student.Teacher.Ratio", "Free.Lu
 numeric.col.ops <- c("min", "max", "mean", "sd", "median")
 
 for (col in nces.numeric.cols) {
-  nces.data[[col]] <- as.numeric(nces.data[[col]])
+  nces.dt[[col]] <- as.numeric(nces.dt[[col]])
   for (op in numeric.col.ops) {
     op.call <- function(x) {
       fun <- get(op)
       fun(x)
     }
-    col.name <- paste(col, ".", op, sep="")
+    col.name <- paste(col, ".", op, sep = "")
     # Should we ignore NA here?
-    nces.computed.cols[[col.name]] <- 
-      nces.data[, op.call(na.omit(get(col))), by=State.District.ID]
+    nces.computed.cols[[col.name]] <-
+      nces.dt[, op.call(na.omit(get(col))), by = State.District.ID]
     setnames(nces.computed.cols[[col.name]], "V1", col.name)
   }
 }
 
 nces.computed.dt <- {
   nces.computed.cols %>% reduce(inner_join, by = "State.District.ID")
-  }
+}
+```
 
+```{r}
 write.csv(nces.computed.dt, "./Data Sources CSV/nces.computed.csv")
 
+cwis.nces.computed.combined.dt <- cwis.avg.dt[nces.computed.dt, on = .(State.District.ID)]
+ic.dt[nces.computed.dt, on = .(State.District.ID)]
+```
 
+We may come back to this code
+```{r}
 # interested.coach.cols <- c("State.District.ID", "Date.of.Event/Visit", "Interaction.Type", "Consultants")
 # interested.cwis.cols <- c("State.District.ID", "ETL.AVERAGE")
 
