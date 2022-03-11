@@ -1,0 +1,159 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, linear models"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(glmnet)
+library(mlr3)
+library(mlr3learners)
+library(data.table)
+
+csv.data.loc <- "./Data Sources CSV"
+ic.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.computed.combined.csv", sep = "")
+cwis.joined.dt.loc <- paste(csv.data.loc, "/cwis.nces.computed.combined.csv", sep = "")
+
+ic.joined.dt <- as.data.table(read.csv(ic.joined.dt.loc))
+cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
+```
+
+```{r}
+ic.predict.dt <- ic.joined.dt[, !c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
+ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", "X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
+ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
+ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
+```
+
+```{r}
+num.folds <- 10
+
+task.full.regr <- TaskRegr$new(id = "etlp", backend = ic.predict.dt, target = "ETLP_avg")
+
+task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "ETLP_avg")
+
+task.list <- list(task.full.regr, task.no.cfa.regr)
+
+resampling <- rsmp("cv", folds = num.folds)
+# cv_glmnet returns 2 models, one with s1 and one with minimum
+learner.name.vec <- c("regr.cv_glmnet", "regr.featureless")
+learner.list <- list()
+for (name in learner.name.vec) {
+  learner.list[[name]] <- lrn(name)
+}
+
+benchmark.obj <- benchmark_grid(
+  task = list(task.full.regr),
+  learners = learner.list,
+  resamplings = list(resampling)
+  # tasks, learners, and resamplings
+  # we'll only give a learner vector, same tasks and resamplings
+)
+
+benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
+
+measure <- msr("regr.mse")
+```
+
+```{r}
+result.dt <- benchmark.res$score(measure)
+
+score.result.list <- list()
+# we can't do a for loop over the learner.name.vec because the cv_glmnet needs
+# to be run twice, once for s1 and once for minimum
+for (method in learner.name.vec) {
+  curr.dt <- result.dt[learner_id == method]
+  method.learner.list <- curr.dt$learner
+  for (i in 1:num.folds) {
+    if (method == "regr.cv_glmnet") {
+      curr.model <- method.learner.list[[i]]$model
+      lambda.min.index <- curr.model$index[1]
+      mse.min <- curr.model$cvm[lambda.min.index]
+      lambda.1se.index <- curr.model$index[2]
+      mse.1se <- curr.model$cvm[lambda.1se.index]
+      score.result.list[[paste(method, "1se", i, sep = ".")]] <- data.table(
+        method = paste(method, "1se", sep = "."),
+        fold = i,
+        mse.loss = mse.1se
+      )
+      score.result.list[[paste(method, "min", i, sep = ".")]] <- data.table(
+        method = paste(method, "min", sep = "."),
+        fold = i,
+        mse.loss = mse.min
+      )
+    } else {
+      score.result.list[[paste(method, i, sep = ".")]] <- data.table(
+        method = paste(method, sep = "."),
+        fold = i,
+        mse.loss = curr.dt[i, "regr.mse"][[1]]
+      )
+    }
+  }
+}
+err.dt <- do.call(rbind, score.result.list)
+```
+
+
+LASSO models prove to be much more accurate than the featureless model, disproving the null hypothesis. 
+```{r}
+library(ggplot2)
+method.levels <- err.dt[, .(mean = mean(mse.loss)), by = method][order(-mean), method]
+err.dt[, Method := factor(method, method.levels)]
+err.plot <- ggplot() +
+  geom_point(data = err.dt, aes(x = mse.loss, y = Method))
+
+err.plot
+```
+
+Now we examine the factors that are found to be imporant in the models.
+```{r}
+# we want a dt with each model's coefficients
+# then count and display which coefficients are important
+cv.glm.dt <- result.dt[learner_id == "regr.cv_glmnet"]
+glm.method.v <- c("lambda.min", "lambda.1se")
+glm.coef.list <- list()
+for (fold in 1:num.folds) {
+  for (method in glm.method.v) {
+    curr.coef.mat <- as.matrix(
+      coef(cv.glm.dt[fold]$learner[[1]]$model, s = method)[-1, ]
+    )
+    glm.coef.list[[paste(method, fold)]] <- data.table(
+      method,
+      var = rownames(curr.coef.mat),
+      coef = as.numeric(curr.coef.mat)
+    )
+  }
+}
+
+
+# this dt has columns of coefs of each var and a column with the method
+glm.coef.dt <- do.call(rbind, glm.coef.list)
+
+# dt with var method coef
+# make count
+glm.coef.dt[, count := sum(coef != 0), by = .(method, var)]
+```
+
+
+```{r}
+for (method.select in glm.method.v) {
+  var.coef.plot <- ggplot() +
+    geom_point(data = glm.coef.dt[method.select == method], aes(x = coef, y = var)) +
+    facet_grid(count ~ ., scales = "free", space = "free")
+  # scale_y_continuous(breaks=1:num.folds)
+  png(filename = paste(method, ".png", sep = ""), width = 8, height = 12, unit = "in", res = 200)
+  print(var.coef.plot)
+  dev.off()
+}
+```
+
+```{r}
+
+var.coef.plot <- ggplot() +
+  geom_point(data = var.coef.long.dt, aes(x = coef, y = count, color = var)) +
+  facet_grid(method ~ .) +
+  scale_y_continuous(breaks = 1:num.folds)
+
+var.coef.plot
+```

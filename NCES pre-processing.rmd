@@ -1,5 +1,5 @@
 ---
-title: "Interpretable Analysis of School Policy Decisions"
+title: "Interpretable Analysis of School Policy Decisions, Data Pre-processing"
 author: "Charles Saluski"
 # date: "1/4/2022"
 output: pdf_document
@@ -13,7 +13,7 @@ library(stringr)
 library(purrr)
 ```
 
-Processing of yearly NCES data tables, not yet functioning.
+Process yearly NCES tables, removing non-universal columns
 ```{r}
 
 nces.base.location <- "Data Sources/NCES Data - District-Building Characteristics/NCES annual data/"
@@ -21,28 +21,30 @@ nces.base.location <- "Data Sources/NCES Data - District-Building Characteristic
 nces.file.vec <- list.files(nces.base.location)
 
 # not all data sets have same columns, so this method of renaming doesn't work
-nces.cols <- c("School Name",
-"State Name [Public School] Latest available year",
-"Agency ID - NCES Assigned [Public School] Latest available year",
-"School ID - NCES Assigned [Public School] Latest available year",
-"School Name [Public School]",
-"School Type [Public School]",
-"Charter School [Public School]",
-"Urban-centric Locale [Public School]",
-"School-wide Title I [Public School]",
-"Title I Eligible School [Public School]",
-"State School ID [Public School]",
-"National School Lunch Program [Public School]",
-"Lowest Grade Offered [Public School]",
-"Highest Grade Offered [Public School]",
-"Total Students, All Grades (Excludes AE) [Public School]",
-"Total Students, All Grades (Includes AE) [Public School]",
-"Free Lunch Eligible [Public School]",
-"Direct Certification [Public School]",
-"Reduced-price Lunch Eligible Students [Public School]",
-"Free and Reduced Lunch Students [Public School]",
-"Full-Time Equivalent (FTE) Teachers [Public School]",
-"Pupil/Teacher Ratio [Public School]")
+nces.cols <- c(
+  "School Name",
+  "State Name [Public School] Latest available year",
+  "Agency ID - NCES Assigned [Public School] Latest available year",
+  "School ID - NCES Assigned [Public School] Latest available year",
+  "School Name [Public School]",
+  "School Type [Public School]",
+  "Charter School [Public School]",
+  # "Urban-centric Locale [Public School]",
+  "School-wide Title I [Public School]",
+  "Title I Eligible School [Public School]",
+  "State School ID [Public School]",
+  "National School Lunch Program [Public School]",
+  "Lowest Grade Offered [Public School]",
+  "Highest Grade Offered [Public School]",
+  "Total Students, All Grades (Excludes AE) [Public School]",
+  "Total Students, All Grades (Includes AE) [Public School]",
+  "Free Lunch Eligible [Public School]",
+  # "Direct Certification [Public School]",
+  "Reduced-price Lunch Eligible Students [Public School]",
+  "Free and Reduced Lunch Students [Public School]",
+  "Full-Time Equivalent (FTE) Teachers [Public School]",
+  "Pupil/Teacher Ratio [Public School]"
+)
 
 getYearVec <- function(file.vec) {
   temp.list <- list()
@@ -59,17 +61,38 @@ combine_nces_files <- function(file.vec, base.location) {
   for (file.index in 1:length(file.vec)) {
     file.loc <- paste(base.location, file.vec[[file.index]], sep = "")
     curr.dt <- as.data.table(read.xlsx(file.loc, startRow = 7))
-    print(nces.cols)
-    print(names(curr.dt))
-    setnames(curr.dt, old=names(curr.dt), new=nces.cols)
+    curr.names <- names(curr.dt)
+    # not all tables have locale, and we can assume that it does not change
+    # over time so we merge it from other data.
+    curr.locale.index <- (grepl("Locale", curr.names))
+    curr.has.locale <- (TRUE %in% curr.locale.index)
+    if (curr.has.locale) {
+      curr.dt <- curr.dt[, !which(curr.locale.index), with = FALSE]
+    }
+    # this column does not exist in all data sets, also not sure what it means.
+    curr.certification.index <- (grepl("Certification", curr.names))
+    curr.has.certification <- (TRUE %in% curr.certification.index)
+    if (curr.has.certification) {
+      curr.dt <- curr.dt[, !which(curr.certification.index), with = FALSE]
+    }
+    # print(names(curr.dt))
+    setnames(curr.dt, old = names(curr.dt), new = nces.cols)
     curr.dt[, year := nces.year.vec[[file.index]]]
-    print(str(curr.dt))
+    # replace expanded district codes with short district codes used in other
+    # data sets
+    districts <- curr.dt[["State School ID [Public School]"]]
+    # this creates some "MO-NA" entries, which is not ideal, but they will be
+    # dropped later
+    districts <- paste("MO-", str_extract(districts, "\\d{6}"), sep = "")
+    curr.dt[, "State School ID [Public School]" := districts]
     temp.dt.list[[file.index]] <- curr.dt
   }
   temp.dt.list
 }
-# This has issues right now, need to make column names consistent between files
-# nces.yearly.dt <- combine_nces_files(nces.file.vec, nces.base.location)
+nces.yearly.dt.list <- combine_nces_files(nces.file.vec, nces.base.location)
+nces.yearly.dt <- do.call(rbind, nces.yearly.dt.list)
+setnames(nces.yearly.dt, "State School ID [Public School]", "State.District.ID")
+
 ```
 
 Read NCES data 
@@ -105,23 +128,43 @@ ic.dt <- as.data.table(read.xlsx(ic.file))
 ic.district.cols <- unique(ic.dt[["District.Code"]])
 valid.ic.rows <- grepl("MO", ic.district.cols)
 ic.district.cols <- ic.district.cols[valid.ic.rows]
-# subset nces.dt to rows in DCI program, 
-# i.e. those who provide integration checklists.
-nces.dt <- nces.dt[ic.district.cols, on = .(State.District.ID)]
+setnames(ic.dt, "currentSchoolYear", "year")
 
 setnames(ic.dt, "District.Code", "State.District.ID")
 
 cwis.avg.file <- "Data Sources/Data Research Questions/CWIS_avg_per_domain_per_district.csv.xlsx"
 cwis.avg.dt <- as.data.table(read.xlsx(cwis.avg.file))
-cwis.avg.dt <- cwis.avg.dt[ic.district.cols, on = .(State.District.ID)]
+# cwis.avg.dt <- cwis.avg.dt[ic.district.cols, on = .(State.District.ID)]
+
+cwis.district.cols <- cwis.avg.dt[["State.District.ID"]]
 
 
-sessions <- unique(cwis.avg.dt$session)
-session.year.ranges <- c(
-  sessions[1], sessions[2:3], sessions[4:6], sessions[7],
-  sessions[8:9], sessions[10]
-)
+
+time_divide_cwis <- function(val) {
+  time.section <- 0
+  if (val >= 201608 && val < 201707) {
+    time.section <- 2016
+  } else if (val >= 201708 && val < 201807) {
+    time.section <- 2017
+  } else if (val >= 201808 && val < 201907) {
+    time.section <- 2018
+  } else if (val >= 201908 && val < 202007) {
+    time.section <- 2019
+  } else if (val >= 202008 && val < 202107) {
+    time.section <- 2020
+  }
+  time.section
+}
+cwis.avg.dt <- cwis.avg.dt[complete.cases(cwis.avg.dt[, ])]
+year <-
+    unlist(lapply(
+      cwis.avg.dt[["session"]],
+      time_divide_cwis
+    ))
+cwis.avg.dt <- cbind(cwis.avg.dt, year)
 ```
+
+
 
 ```{r}
 nces.computed.cols <- list()
@@ -129,7 +172,7 @@ nces.computed.cols <- list()
 nces.locale.categories <- unique(nces.dt[["Locale"]])
 
 # we will probably want this wide data
-# By observation, there is a single locale per district ID, 
+# By observation, there is a single locale per district ID,
 # so we can not use one-hot encoding for our ML models.
 # We may want to see if this can be broken down to a boolean variable,
 # city vs rural
@@ -137,6 +180,22 @@ nces.computed.cols[["locale.cols"]] <- dcast(
   nces.dt,
   State.District.ID ~ Locale
 )
+
+# recover the local categories that were lost in earlier processing
+nces.yearly.dt <- nces.yearly.dt[nces.computed.cols[["locale.cols"]],
+  on = .(State.District.ID)
+]
+
+setnames(
+  nces.yearly.dt,
+  old = c("Free Lunch Eligible [Public School]", "Reduced-price Lunch Eligible Students [Public School]", "Total Students, All Grades (Includes AE) [Public School]"),
+  new = c("Free.Lunch.Eligible", "Reduced.Lunch.Eligible", "Total.Students")
+)
+
+# this value is not correct, should clearly only produce values under 1,
+# but produces values above 1.
+nces.yearly.dt[, Free.Reduced.Lunch.Rate := (as.numeric(get("Free and Reduced Lunch Students [Public School]"))) / as.numeric(Total.Students)]
+
 
 # but we can also make it long
 # count(nces.data, c("State.District.ID", "Locale"))
@@ -147,32 +206,84 @@ nces.numeric.cols <- c("Students", "Teachers", "Student.Teacher.Ratio", "Free.Lu
 
 numeric.col.ops <- c("min", "max", "mean", "sd", "median")
 
-for (col in nces.numeric.cols) {
-  nces.dt[[col]] <- as.numeric(nces.dt[[col]])
-  for (op in numeric.col.ops) {
-    op.call <- function(x) {
-      fun <- get(op)
-      fun(x)
+nces.yearly.numeric.cols <- c(
+  "Total Students, All Grades (Excludes AE) [Public School]",
+  "Full-Time Equivalent (FTE) Teachers [Public School]",
+  "Pupil/Teacher Ratio [Public School]",
+  "Free.Lunch.Eligible",
+  "Reduced.Lunch.Eligible",
+  "Total.Students",
+  "Free and Reduced Lunch Students [Public School]",
+  "Free.Reduced.Lunch.Rate"
+)
+
+aggregate_dt_columns <- function(dt, which, what) {
+  what.computed.cols <- list()
+
+  for (col in which) {
+    dt[[col]] <- as.numeric(dt[[col]])
+    for (op in what) {
+      op.call <- function(x) {
+        fun <- get(op)
+        fun(x)
+      }
+      col.name <- paste(col, ".", op, sep = "")
+      # Should we ignore NA here?
+      what.computed.cols[[col.name]] <-
+        dt[, op.call(na.omit(get(col))), by = list(State.District.ID, year)]
+      setnames(what.computed.cols[[col.name]], "V1", col.name)
     }
-    col.name <- paste(col, ".", op, sep = "")
-    # Should we ignore NA here?
-    nces.computed.cols[[col.name]] <-
-      nces.dt[, op.call(na.omit(get(col))), by = State.District.ID]
-    setnames(nces.computed.cols[[col.name]], "V1", col.name)
   }
+  what.computed.cols %>% reduce(inner_join, by = c("State.District.ID", "year"))
 }
 
-nces.computed.dt <- {
-  nces.computed.cols %>% reduce(inner_join, by = "State.District.ID")
-}
+nces.yearly.computed.dt <- aggregate_dt_columns(nces.yearly.dt, nces.yearly.numeric.cols, numeric.col.ops)
+
+nces.yearly.computed.dt <- nces.yearly.computed.dt[nces.computed.cols[["locale.cols"]], on = .(State.District.ID)]
+
+# nces.computed.dt <- {
+#   nces.computed.cols %>% reduce(inner_join, by = "State.District.ID")
+# }
+# this sets the NA values from the SD of a single number to 0
+nces.yearly.computed.dt[is.na(nces.yearly.computed.dt)] <- 0
 ```
+
+Merges we are interested in, IC + CWIS + NCES, CWIS + NCES. IC does not have as many rows as CWIS so both merges are interesting to consider.
+```{r}
+
+# subset nces.dt and nces.yearly.dt to rows in DCI program,
+# i.e. those who provide integration checklists.
+# nces.dt <- nces.dt[ic.district.cols, on = .(State.District.ID)]
+# nces.yearly.dt <- nces.yearly.dt[ic.district.cols, on = .(State.District.ID)]
+
+cwis.nces.computed.combined.dt <- cwis.avg.dt[nces.yearly.computed.dt, on = .(State.District.ID, year), nomatch = NULL]
+
+ic.cwis.nces.computed.combined.dt <- ic.dt[cwis.nces.computed.combined.dt, on=.(State.District.ID, year), nomatch=NULL]
+
+# write.csv(nces.computed.dt, "./Data Sources CSV/nces.computed.csv")
+write.csv(cwis.nces.computed.combined.dt, "./Data Sources CSV/cwis.nces.computed.combined.csv")
+write.csv(ic.cwis.nces.computed.combined.dt, "./Data Sources CSV/ic.cwis.nces.computed.combined.csv")
+```
+
+Identifying rows that were lost in joins because of the nomatch=NULL parameter.
+```{r}
+str(unique(cwis.avg.dt[, .(State.District.ID, year)]))
+str(unique(cwis.nces.computed.combined.dt[, .(State.District.ID, year)]))
+```
+We see that we lost 5 combinations of district ID and year, so which are they?
 
 ```{r}
-write.csv(nces.computed.dt, "./Data Sources CSV/nces.computed.csv")
-
-cwis.nces.computed.combined.dt <- cwis.avg.dt[nces.computed.dt, on = .(State.District.ID)]
-ic.dt[nces.computed.dt, on = .(State.District.ID)]
+cwis.unjoined.unique <- unique(cwis.avg.dt[, .(State.District.ID, year)])
+cwis.joined.unique <- unique(cwis.nces.computed.combined.dt[, .(State.District.ID, year)])
+cwis.unjoined.unique[!cwis.joined.unique, on=.(State.District.ID, year)]
 ```
+We find that MO-118118 does not exist in the NCES data, but it does in the CWIS data for all 5 years that have data. 
+
+```{r}
+str(unique(ic.dt[, .(State.District.ID, year)]))
+str(unique(ic.cwis.nces.computed.combined.dt[, .(State.District.ID, year)]))
+```
+We also see that we lost 27 rows on this join, however this is expected as we know the IC dataset is smaller.
 
 We may come back to this code
 ```{r}
