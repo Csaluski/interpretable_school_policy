@@ -118,6 +118,9 @@ for (i in 1:length(nces.replace.cols)) {
     setnames(nces.dt, old.name, new.name)
   }
 }
+
+# remove NCES columns that have no data, have locale code of "N"
+nces.dt <- nces.dt[Locale != "N"]
 ```
 
 Load implementation data from Melvin's work, RQ_IC file aggregates CWIS survey results (implementation checklist)
