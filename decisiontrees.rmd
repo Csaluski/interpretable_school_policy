@@ -1,0 +1,107 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, Decision Trees"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(glmnet)
+library(mlr3)
+library(mlr3learners)
+library(data.table)
+library(mlr3extralearners)
+library(mlr3tuning)
+
+csv.data.loc <- "./Data Sources CSV"
+ic.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.computed.combined.csv", sep = "")
+cwis.joined.dt.loc <- paste(csv.data.loc, "/cwis.nces.computed.combined.csv", sep = "")
+
+ic.joined.dt <- as.data.table(read.csv(ic.joined.dt.loc))
+cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
+```
+
+```{r}
+ic.predict.dt <- ic.joined.dt[, !c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
+ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", "X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
+ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
+ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
+```
+
+```{r}
+set.seed(123)
+num.folds <- 10
+
+task.full.regr <- TaskRegr$new(id = "etlp", backend = ic.predict.dt, target = "ETLP_avg")
+
+task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "ETLP_avg")
+
+task.name.vec <- c("etlp", "etlp.no.cfa")
+
+task.list <- list(task.full.regr, task.no.cfa.regr)
+
+measure <- msr("regr.mse")
+
+resampling <- rsmp("cv", folds = num.folds)
+# cv_glmnet returns 2 models, one with s1 and one with minimum
+learner.name.vec <- c("regr.cv_glmnet", "regr.featureless", "regr.ctree", "regr.cforest")
+learner.list <- list()
+for (name in learner.name.vec) {
+  learner.list[[name]] <- lrn(name)
+}
+
+learner.list[["xgboost.at.lrn"]] <- AutoTuner$new(
+  learner = lrn("regr.xgboost"),
+  resampling = rsmp("cv", folds = 5),
+  measure = measure, # mean squared error
+  search_space = ps(eta = p_dbl(lower = 0, upper = 1)
+  # , nrounds = p_int(lower = 1, upper = 16)
+  ),
+  terminator = trm("none"),
+  tuner = tnr("grid_search", resolution = 15),
+  store_tuning_instance = TRUE
+  )
+
+
+benchmark.obj <- benchmark_grid(
+  task = task.list,
+  learners = learner.list,
+  resamplings = list(resampling)
+  # tasks, learners, and resamplings
+  # we'll only give a learner vector, same tasks and resamplings
+)
+
+benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
+result.dt <- benchmark.res$score(measure)
+```
+
+```{r}
+library(ggplot2)
+method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-mean), learner_id]
+result.dt[, Method := factor(learner_id, method.levels)]
+err.plot <- ggplot() +
+  geom_point(data = result.dt, aes(x = regr.mse, y = Method)) +
+  facet_grid(task_id ~ ., labeller = label_both)
+
+err.plot
+png(filename = "decision.tree.loss.png", width = 6, height = 4, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+```
+
+```{r}
+
+ctree.dt <- result.dt[learner_id == "regr.ctree"]
+ctree.model.list <- list()
+for (task.name in task.name.vec) {
+  curr.dt <- ctree.dt[task_id == task.name]
+  for (fold in 1:num.folds) {
+    curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
+
+    filename <- paste(task.name, fold,  "tree.png", sep = ".")
+    png(filename = filename, width = 12, height = 6, unit = "in", res = 200)
+    plot(curr.tree)
+    dev.off()
+  }
+}
+```
