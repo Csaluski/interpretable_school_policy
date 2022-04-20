@@ -21,10 +21,13 @@ cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
 ```
 
 ```{r}
-ic.predict.dt <- ic.joined.dt[, !c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
-ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", "X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
+exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")
+ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
+ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", ..exclude.cols)]
+ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
 ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
 ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
+ic.predict.cfa.dt <- ic.predict.cfa.dt[complete.cases(ic.predict.cfa.dt[, ]), ]
 ```
 
 ```{r}
@@ -35,9 +38,11 @@ task.full.regr <- TaskRegr$new(id = "etlp", backend = ic.predict.dt, target = "E
 
 task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "ETLP_avg")
 
-task.name.vec <- c("etlp", "etlp.no.cfa")
+task.cfa.regr <- TaskRegr$new(id = "cfa", backend = ic.predict.cfa.dt, target = "CFA_avg")
 
-task.list <- list(task.full.regr, task.no.cfa.regr)
+task.name.vec <- c("etlp", "etlp.no.cfa", "cfa")
+
+task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr)
 
 resampling <- rsmp("cv", folds = num.folds)
 # cv_glmnet returns 2 models, one with s1 and one with minimum

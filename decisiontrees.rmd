@@ -22,29 +22,44 @@ cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
 ```
 
 ```{r}
-ic.predict.dt <- ic.joined.dt[, !c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
-ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", "X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")]
+# these variables are character and variables used in earlier joins so they are not needed
+exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")
+ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
+ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", ..exclude.cols)]
+ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
+
 ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
 ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
+ic.predict.cfa.dt <- ic.predict.cfa.dt[complete.cases(ic.predict.cfa.dt[, ]), ]
 ```
 
 ```{r}
 set.seed(123)
 num.folds <- 10
 
+# uncomment to run code in parallel, has some issues for me
+# if (future::supportsMulticore()) {
+#   future::plan("multicore", workers=4)
+# } else {
+#   future::plan(future::multisession)
+# }
+# task.backend.names <- c("ic.predict.dt", )
+
 task.full.regr <- TaskRegr$new(id = "etlp", backend = ic.predict.dt, target = "ETLP_avg")
 
 task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "ETLP_avg")
 
-task.name.vec <- c("etlp", "etlp.no.cfa")
+task.cfa.regr <- TaskRegr$new(id = "cfa", backend = ic.predict.cfa.dt, target = "CFA_avg")
 
-task.list <- list(task.full.regr, task.no.cfa.regr)
+task.name.vec <- c("etlp", "etlp.no.cfa", "cfa")
+
+task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr)
 
 measure <- msr("regr.mse")
 
 resampling <- rsmp("cv", folds = num.folds)
 # cv_glmnet returns 2 models, one with s1 and one with minimum
-learner.name.vec <- c("regr.cv_glmnet", "regr.featureless", "regr.ctree", "regr.cforest")
+learner.name.vec <- c("regr.cv_glmnet", "regr.featureless", "regr.ctree")
 learner.list <- list()
 for (name in learner.name.vec) {
   learner.list[[name]] <- lrn(name)
@@ -52,15 +67,16 @@ for (name in learner.name.vec) {
 
 learner.list[["xgboost.at.lrn"]] <- AutoTuner$new(
   learner = lrn("regr.xgboost"),
-  resampling = rsmp("cv", folds = 5),
+  resampling = rsmp("cv", folds = 3),
   measure = measure, # mean squared error
-  search_space = ps(eta = p_dbl(lower = 0, upper = 1)
-  # , nrounds = p_int(lower = 1, upper = 16)
+  search_space = ps(
+    eta = p_dbl(lower = 0, upper = 1),
+    nrounds = p_int(lower = 1, upper = 16)
   ),
   terminator = trm("none"),
-  tuner = tnr("grid_search", resolution = 15),
+  tuner = tnr("grid_search", resolution = 5),
   store_tuning_instance = TRUE
-  )
+)
 
 
 benchmark.obj <- benchmark_grid(
@@ -90,16 +106,69 @@ dev.off()
 ```
 
 ```{r}
+ctree_var_extract <- function(ctree, var.acc.v) {
+  if (!is.null(ctree)) {
+    var.acc.v <- c(var.acc.v, attributes(ctree$info$p.value)$names)
+    for (i in 1:length(ctree$kids)) {
+      var.acc.v <- ctree_var_extract(ctree$kids[[i]], var.acc.v)
+    }
+  }
+  var.acc.v
+}
 
 ctree.dt <- result.dt[learner_id == "regr.ctree"]
+
+ctree.var.list <- list()
+for (task.name in task.name.vec) {
+  curr.learners <- ctree.dt[task.name == task_id]$learner
+
+  for (cv.id in 1:num.folds) {
+    curr.vars <- ctree_var_extract(curr.learners[[cv.id]]$model$node, vector())
+    var.count.dt <- as.data.table(table(curr.vars))
+    var.count.dt[, times.in.tree := N]
+    ctree.var.list[[paste(task.name, cv.id)]] <- data.table(
+      task_id = task.name,
+      var.count.dt,
+      cv.id
+    )
+  }
+}
+# convert all the above code into this single block
+ctree.var.dt <- ctree.dt[, {
+  # TODO get 0 counts by using factor with vector of levels, from original tasks
+  curr.learner <- learner[[1]]
+  res.vars <- ctree_var_extract(curr.learner$model$node, vector())
+  as.data.table(table(res.vars))
+}, by=.(iteration, task_id)]
+ctree.var.dt[, times.in.tree := N]
+ctree.var.dt[, occurence.n.folds := sum(times.in.tree != 0), by=.(res.vars, task_id)]
+```
+
+```{r}
+for (task.name in task.name.vec) {
+  var.count.plot <- ggplot() +
+      geom_point(data = ctree.var.dt[task_id == task.name], aes(x = times.in.tree, y = res.vars)) +
+      facet_grid(occurence.n.folds ~ ., scales = "free", space = "free") 
+
+    filename <- paste(task.name, "count.png", sep = "_")
+    print(filename)
+    png(filename = filename, width = 8, height = 6, unit = "in", res = 200)
+    print(var.count.plot)
+    dev.off()
+}
+
+```
+
+
+```{r}
 ctree.model.list <- list()
 for (task.name in task.name.vec) {
   curr.dt <- ctree.dt[task_id == task.name]
   for (fold in 1:num.folds) {
     curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
 
-    filename <- paste(task.name, fold,  "tree.png", sep = ".")
-    png(filename = filename, width = 12, height = 6, unit = "in", res = 200)
+    filename <- paste(task.name, fold, "tree.png", sep = ".")
+    png(filename = filename, width = 20, height = 6, unit = "in", res = 200)
     plot(curr.tree)
     dev.off()
   }
