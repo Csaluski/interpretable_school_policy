@@ -1,5 +1,5 @@
 ---
-title: "aggregation"
+title: "Coaching aggregation"
 author: "Balaji Senthilkumar"
 ---
 
@@ -9,176 +9,201 @@ library(openxlsx)
 library(dplyr)
 library(stringr)
 library(purrr)
+library(mltools)
 
 coaching.log.path <- "./Data Sources/Coaching logs Fall 2017- Spring 2021.xlsx"
 coaching.csv.path <- "./Data Sources CSV/coaching.csv"
 coachingdata <- data.table(read.xlsx(coaching.log.path, sheet="Condensed columns"))
-# force some round trip encoding oddities that this code relies on, horrible.
-write.csv(coachingdata, coaching.csv.path)
-coachingdata <- data.table(read.csv(coaching.csv.path))
-coachingdata[, Date.of.Event.Visit := convertToDate(get("Date.of.Event.Visit"))]
 
-write.csv(coachingdata, coaching.csv.path)
-coachingdata <- data.table(read.csv(coaching.csv.path))
-dim(coachingdata)
-
-# # required columns
-# coaching.cols19_20 <- c(
-#   "Date.of.Event/Visit.-.Use.Drop.Down.Calendar.to.select.date",
-#   "Duration.of.Event.-.Do.Not.Include.Travel.Time.AND.ignore.seconds",
-#   "Interaction.Type", 
-#   "District.Leadership.Team.members",
-#   "District.Contact.Person", 
-#   "Building.leadership.team.members", 
-#   "Other.district.administrators", 
-#   "Other.building.administrators",
-#   "Building-level.educators", 
-#   "RPDC.Director", 
-#   "Area.Supervisor", 
-#   "Parents", 
-#   "Collaborative.teams", 
-#   "Common.formative.assessment",
-#   "Evidence.of.data-based.decision.making",
-#   "Effective.teaching/learning.practices",
-#   "School-based.implementation.coaching",
-#   "Collective.teacher.efficacy", 
-#   "MMD/DCI.expectations/logistics/DESE.specifics",
-#   "Alignment.and.systems.planning", 
-#   "Practice.profiles",
-#   "Learning.module.materials.(i.e..power.points,.handouts)",
-#   "DESE.virtual.learning.platform",
-#   "Review.of.CFA.data", 
-#   "CWIS", 
-
-# )
+for (col in colnames(coachingdata)) {
+  new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
+  setnames(coachingdata, col, new_name)
+}
+# Convert dates from Excel decimal format to date strings
+coachingdata[, Date.of.Event.Visit := convertToDate(Date.of.Event.Visit)]
 
 # gathering required columns
 required.coaching.col.str <- c(
-  "Date.of.Event.Visit", 
-  "Duration.of.Event", 
-  "Interaction.Type", 
-  "State.District.ID", 
-  "DISTRICTS", 
+  "Date.of.Event.Visit",
+  # Can't use this column without work parsing it into a consistent format
+  # Currently in formats including HH:MM:SS, HH.MM, H hr MM min, MMM min, MMM minutes, etc.  
+  # "Duration.of.Event",
+  "Interaction.Type",
+  "CADRE",
+  "State.District.ID",
+  "DISTRICTS",
   "District.Leadership.Team.Members",
-  "District.Contact.Person", 
-  "Building.Leadership.Team.Members", 
-  "Other.District.Administrators", 
+  "District.Contact.Person",
+  "Building.Leadership.Team.Members",
+  "Other.District.Administrators",
   "Other.Building.Administrators",
-  "Building.level.Educators", 
-  "RPDC.Director", 
-  "Area.Supervisor", 
-  "Parents", 
-  "Collaborative.teams", 
+  "Building.level.Educators",
+  "RPDC.Director",
+  "Area.Supervisor",
+  "Parents",
+  "Collaborative.teams",
   "Common.formative.assessment",
   "Data.based.decision.making",
   "Effective.teaching.learning.practices",
-  "Instructional.Leadership", 
+  "Instructional.Leadership",
   "School.based.implementation.coaching",
-  "Collective.teacher.efficacy", 
-  "MMD.DCI.expectations.logistics.DESE.specifics", 
-  "Alignment.and.systems.planning", 
+  "Collective.teacher.efficacy",
+  "MMD.DCI.expectations.logistics.DESE.specifics",
+  "Alignment.and.systems.planning",
   "Practice.profiles",
-  "Self.assessment.practice.profile..SAPP.", 
-  "Learning.module.materials..i.e..power.points..handouts.", 
+  "Self.assessment.practice.profile..SAPP.",
+  "Learning.module.materials..i.e..power.points..handouts.",
   "DESE.virtual.learning.platform",
-  "Review.of.CFA.data", 
-  "CWIS", 
-  "Distance.Learning", 
+  "Review.of.CFA.data",
+  "CWIS",
+  "Distance.Learning",
   "Virtual.Learning.Modules.and.or.PowerPoints",
   "Leadership.for.Effective.Implementation.of.District.Wide.Evidenced.Based.Practices"
 )
 
 required.coaching.cols <- coachingdata[, ..required.coaching.col.str]
-
-message(sprintf("required coachingdata : %s\n", paste(colnames(coachingdata), collapse = ", ")))
-
-# splitting date to year&month to create timeperiods
-required.coaching.cols$Date.of.Event.Visit <- as.Date(required.coaching.cols$Date.of.Event.Visit, format = "%Y-%m-%d")
-required.coaching.cols$Year <- as.integer(format(required.coaching.cols$Date.of.Event.Visit, "%Y"))
-required.coaching.cols$Month <- format(required.coaching.cols$Date.of.Event.Visit, "%b")
 ```
 
 ```{r}
+# create date columns
+required.coaching.cols$year <- as.integer(format(required.coaching.cols$Date.of.Event.Visit, "%Y"))
+required.coaching.cols$Month <- as.integer(format(required.coaching.cols$Date.of.Event.Visit, "%m"))
 
-required.coaching.cols$Duration.of.Event[required.coaching.cols$Duration.of.Event == ""] <- 0
-required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == ""] <- "None"
+# Deal with duration later
+# required.coaching.cols$Duration.of.Event[required.coaching.cols$Duration.of.Event == ""] <- 0
 
-## setting unique interaction type to columns
+
+# Aggregate different types into broader categories
 required.coaching.cols$Interaction.Type <- tolower(required.coaching.cols$Interaction.Type)
 unique(required.coaching.cols$Interaction.Type)
 
-required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "in-person"] <- "In-Person"
+required.coaching.cols[
+  Interaction.Type == "in-person",
+  Interaction.Type := "In-person"
+  ]
 
-required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "virtual w/ video" |
-  required.coaching.cols$Interaction.Type == "virtual w/video"] <- "Virtual"
+required.coaching.cols[
+  Interaction.Type %in% c("virtual w/ video", "virtual w/video"),
+  Interaction.Type := "Virtual"
+  ]
 
-required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "phone/conference call" |
-  required.coaching.cols$Interaction.Type == "conference call" |
-  required.coaching.cols$Interaction.Type == "phone"] <- "Phone"
+required.coaching.cols[
+  Interaction.Type %in% c("phone/conference call", "conference call", "phone"), 
+  Interaction.Type := "Phone"
+  ]
 
-required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "in-person & virtual" |
-  required.coaching.cols$Interaction.Type == "in-person and virtual" |
-  required.coaching.cols$Interaction.Type == "phone"] <- "Virtual&Phone"
+required.coaching.cols[
+  Interaction.Type %in% c("in-person & virtual","in-person and virtual"),
+  Interaction.Type := "In-person and virtual"
+]
 
-
-# one hot encode the Interaction Types
-interaction.required.coaching.cols <- data.table(required.coaching.cols)
-Interaction.Type.Encoded <- dcast(interaction.required.coaching.cols[, list(V1 = 1, State.District.ID, Interaction.Type)], State.District.ID ~ Interaction.Type, fun = sum, value.var = "V1", drop = c(TRUE, FALSE))
-
-# Prepend Interaction_Type in front of each one-hot-encoded feature
-setnames(Interaction.Type.Encoded, setdiff(colnames(Interaction.Type.Encoded), "State.District.ID"), paste0("Interaction.Type_", setdiff(colnames(Interaction.Type.Encoded), "State.District.ID")))
-
-# Join one-hot tables with original dataset
-
-encoded.required.coaching.cols <- data.frame(interaction.required.coaching.cols[Interaction.Type.Encoded, on = "State.District.ID"])
-
-months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+required.coaching.cols[is.na(Interaction.Type), Interaction.Type := "Unknown"]
 
 
+# Sum the number of interaction types by district ID and year
+required.coaching.cols[["Interaction.Type"]] <- factor(required.coaching.cols[["Interaction.Type"]])
+interaction.types = unique(required.coaching.cols$Interaction.Type)
+Interaction.Type.Encoded <- one_hot(required.coaching.cols, cols=c("Interaction.Type"))
 
-date.to.period <- function(Month, Year) {
-  formatted.date <- ""
-  month.to.number <- match(Month, month.abb)
-  formatted.date <- ifelse(month.to.number > 0 & month.to.number < 3, paste0("Aug", Year - 1, "-", "Feb", Year), ifelse(month.to.number >= 3 & month.to.number < 8, paste0("Mar", Year, "-", "July", Year), paste0("Aug", Year, "-", "Feb", Year + 1)))
-  return(formatted.date)
+interaction.type.cols <- sapply(interaction.types, function(type) {paste0("Interaction.Type_", type, sep="")})
+
+interaction.sum.district.year <- Interaction.Type.Encoded[
+  ,
+  lapply(.SD, sum),
+  .SDcols = interaction.type.cols,
+  by = c("State.District.ID", "year")
+  ]
+
+# Join sum of interaction types to original data
+# encoded.required.coaching.cols <- required.coaching.cols[
+#   Interaction.Type.Encoded,
+#   on=.(State.District.ID)]
+
+date.to.period <- function(month, year) {
+  if (month < 3) {
+    formatted.date <- paste0("Aug", year - 1, "-", "Feb", year)
+  }
+  else if (month < 8) {
+    formatted.date <- paste0("Mar", Year, "-", "July", Year)
+  }
+  else {
+    formatted.date <- paste0("Aug", Year, "-", "Feb", Year + 1)
+  }
+  formatted.date
 }
 
 # encoded.required.coaching.cols$Period.of.Event <- date.to.period(encoded.required.coaching.cols$Month, encoded.required.coaching.cols$Year)
 
+bool.cols <- c()
 
-# handling n/a values & generalizing values
-for (j in 6:(ncol(encoded.required.coaching.cols))) {
-  print(names(encoded.required.coaching.cols)[j])
-  encoded.required.coaching.cols[, j][is.na(encoded.required.coaching.cols[, j])] <- 0
-  encoded.required.coaching.cols[, j][encoded.required.coaching.cols[, j] == "Yes" |
-    encoded.required.coaching.cols[, j] == "yes"] <- 1
-  encoded.required.coaching.cols[, j][encoded.required.coaching.cols[, j] == "No" |
-    encoded.required.coaching.cols[, j] == ""] <- 0
+# boolean columns will have yes answers in them and others don't, so select the
+# columns matching that pattern to conduct operations on
+for (col in colnames(required.coaching.cols)) {
+  col.data <- required.coaching.cols[, ..col]
+  if (grepl("yes", col.data, ignore.case=TRUE)) {
+    bool.cols <- append(bool.cols, col)
+  }
 }
 
-coaching.dt <- as.data.table(encoded.required.coaching.cols)
-coaching_mean_cols <- names(encoded.required.coaching.cols[c(6:32, 35:39)])
-coaching.dt <- as.data.table(encoded.required.coaching.cols)
+yes.or.false <- function(val) {ifelse(val %in% c("yes", "Yes"), 1, 0)}
+# handling n/a values of boolean columns, NA is interpreted as no
+for (col in bool.cols) {
+  curr.col <- required.coaching.cols[[col]]
+  res <- as.vector(sapply(curr.col, yes.or.false))
+  required.coaching.cols[[col]] <- res
+}
 
+# Compute proportion of each coaching type by district and year
+coaching.aggregate <- required.coaching.cols[
+  ,
+  lapply(.SD, mean),
+  .SDcols = bool.cols,
+  by = c("State.District.ID", "year")
+  ]
 
-# coaching.dt <- coaching.dt[!coaching.dt$Period.of.Event == "Aug0-Feb1"]
-# coaching.dt <- coaching.dt[!coaching.dt$Period.of.Event == "Mar0-July0"]
-# coaching.dt <- coaching.dt[!coaching.dt$Period.of.Event == "Aug2-Feb3"]
+coaching.aggregate <- coaching.aggregate[interaction.sum.district.year, on=.(State.District.ID, year)]
 
-## aggregrating coaching logs using State.District.ID & Period.of.Event
-coaching.dt[, coaching_mean_cols] <- coaching.dt[, lapply(.SD, as.numeric), .SDcols = coaching_mean_cols]
-coaching.aggregate <- coaching.dt[, lapply(.SD, mean), .SDcols = coaching_mean_cols, by = c("State.District.ID", "Year")]
-
-
-# earlier
-dim(coaching.aggregate)
-# [1] 746  34
-
+coaching.agg.loc <- "./Data Sources CSV/coaching.aggregation.csv"
+write.csv(coaching.aggregate, coaching.agg.loc, row.names=FALSE)
 ```
 
 
+Compute a correlation matrix of the coaching data
 ```{r}
-exclude.cols <- c("State.District.ID", "Year")
+library(ggplot2)
+
+exclude.cols <- c("State.District.ID", "year")
+
+
+cormat.raw <- cor(coaching.aggregate[, !..exclude.cols], method="pearson")
+cormat.keep <- reshape2::melt(upper.tri(cormat.raw, diag = FALSE))
+cormat <- reshape2::melt(cormat.raw)[cormat.keep$value == TRUE,]
+
+write.csv(cormat, file="./Data Sources CSV/coaching_cormat.csv")
+
+coaching.corr.plot <- ggplot(cormat, aes(x=Var1, y=Var2, fill=value)) +
+  geom_tile() + 
+  coord_equal() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limit=c(-1,1)) +
+  # TODO this is not a function in animint2, could be fun to implement it later
+  scale_x_discrete(position = "top") +
+  theme(
+    axis.text.x = element_text(angle = -45, vjust = 1, size = 10, hjust = 1),
+    axis.text.y = element_text(vjust = 0.5, size = 10, hjust = 1))
+# for any give var, what is more correlated?
+# Some kind of interactivity, select a row/column to see a list of highly correlated variables?
+# Or a cutoff limit that shows the top 10%?
+filename <- "coaching.corr.matrix.png"
+print(filename)
+png(filename = filename, width = 12, height = 10, unit = "in", res = 200)
+print(coaching.corr.plot)
+dev.off()
+```
+
+
+
+```{r}
+exclude.cols <- c("State.District.ID", "year")
 
 for (col in colnames(coaching.aggregate)) {
   if (!(col %in% exclude.cols)) {
@@ -186,16 +211,17 @@ for (col in colnames(coaching.aggregate)) {
   }
 }
 
-
 ic.cwis.nces.computed.combined.dt <- fread("./Data Sources CSV/ic.cwis.nces.computed.combined.csv")
-ic.cwis.nces.computed.combined.dt[, Year := year]
 
-ic.cwis.nces.cl.computed.combined.dt <- ic.cwis.nces.computed.combined.dt[coaching.aggregate, on = .(Year, State.District.ID)]
+ic.cwis.nces.cl.computed.combined.dt <- ic.cwis.nces.computed.combined.dt[coaching.aggregate, on = .(year, State.District.ID)]
 ic.cwis.nces.cl.computed.combined.dt <- ic.cwis.nces.cl.computed.combined.dt[complete.cases(ic.cwis.nces.cl.computed.combined.dt), drop = TRUE]
 
 write.csv(ic.cwis.nces.cl.computed.combined.dt, "./Data Sources CSV/ic.cwis.nces.cl.computed.combined.csv")
 
 ```
+
+
+I haven't touched anything below this, it looks pretty messy
 
 ```{r}
 ### CWIS
