@@ -136,7 +136,6 @@ print(err.plot)
 dev.off()
 
 
-
 err.plot <- ggplot() +
   geom_point(data = err.dt[Method %in% c("regr.cv_glmnet.min", "regr.cv_glmnet.1se", "regr.featureless")], aes(x = mse.loss, y = Method)) +
   ggtitle(paste("MSE loss by method and task")) +
@@ -188,6 +187,13 @@ glm.coef.dt <- do.call(rbind, glm.coef.list)
 # dt with var method coef
 # make count
 glm.coef.dt[, count := sum(coef != 0), by = .(method, task_id, var)]
+
+```
+
+```{r}
+coef.file.dest <- "./Data Sources CSV/regr.glm.coef.csv"
+
+write.csv(glm.coef.dt, file = coef.file.dest, row.names=FALSE)
 ```
 
 
