@@ -1,0 +1,361 @@
+---
+title: "aggregation"
+author: "Balaji Senthilkumar"
+---
+
+```{r}
+library(data.table)
+library(openxlsx)
+library(dplyr)
+library(stringr)
+library(purrr)
+
+coaching.log.path <- "./Data Sources/Coaching logs Fall 2017- Spring 2021.xlsx"
+coaching.csv.path <- "./Data Sources CSV/coaching.csv"
+coachingdata <- data.table(read.xlsx(coaching.log.path, sheet="Condensed columns"))
+# force some round trip encoding oddities that this code relies on, horrible.
+write.csv(coachingdata, coaching.csv.path)
+coachingdata <- data.table(read.csv(coaching.csv.path))
+coachingdata[, Date.of.Event.Visit := convertToDate(get("Date.of.Event.Visit"))]
+
+write.csv(coachingdata, coaching.csv.path)
+coachingdata <- data.table(read.csv(coaching.csv.path))
+dim(coachingdata)
+
+# # required columns
+# coaching.cols19_20 <- c(
+#   "Date.of.Event/Visit.-.Use.Drop.Down.Calendar.to.select.date",
+#   "Duration.of.Event.-.Do.Not.Include.Travel.Time.AND.ignore.seconds",
+#   "Interaction.Type", 
+#   "District.Leadership.Team.members",
+#   "District.Contact.Person", 
+#   "Building.leadership.team.members", 
+#   "Other.district.administrators", 
+#   "Other.building.administrators",
+#   "Building-level.educators", 
+#   "RPDC.Director", 
+#   "Area.Supervisor", 
+#   "Parents", 
+#   "Collaborative.teams", 
+#   "Common.formative.assessment",
+#   "Evidence.of.data-based.decision.making",
+#   "Effective.teaching/learning.practices",
+#   "School-based.implementation.coaching",
+#   "Collective.teacher.efficacy", 
+#   "MMD/DCI.expectations/logistics/DESE.specifics",
+#   "Alignment.and.systems.planning", 
+#   "Practice.profiles",
+#   "Learning.module.materials.(i.e..power.points,.handouts)",
+#   "DESE.virtual.learning.platform",
+#   "Review.of.CFA.data", 
+#   "CWIS", 
+
+# )
+
+# gathering required columns
+required.coaching.col.str <- c(
+  "Date.of.Event.Visit", 
+  "Duration.of.Event", 
+  "Interaction.Type", 
+  "State.District.ID", 
+  "DISTRICTS", 
+  "District.Leadership.Team.Members",
+  "District.Contact.Person", 
+  "Building.Leadership.Team.Members", 
+  "Other.District.Administrators", 
+  "Other.Building.Administrators",
+  "Building.level.Educators", 
+  "RPDC.Director", 
+  "Area.Supervisor", 
+  "Parents", 
+  "Collaborative.teams", 
+  "Common.formative.assessment",
+  "Data.based.decision.making",
+  "Effective.teaching.learning.practices",
+  "Instructional.Leadership", 
+  "School.based.implementation.coaching",
+  "Collective.teacher.efficacy", 
+  "MMD.DCI.expectations.logistics.DESE.specifics", 
+  "Alignment.and.systems.planning", 
+  "Practice.profiles",
+  "Self.assessment.practice.profile..SAPP.", 
+  "Learning.module.materials..i.e..power.points..handouts.", 
+  "DESE.virtual.learning.platform",
+  "Review.of.CFA.data", 
+  "CWIS", 
+  "Distance.Learning", 
+  "Virtual.Learning.Modules.and.or.PowerPoints",
+  "Leadership.for.Effective.Implementation.of.District.Wide.Evidenced.Based.Practices"
+)
+
+required.coaching.cols <- coachingdata[, ..required.coaching.col.str]
+
+message(sprintf("required coachingdata : %s\n", paste(colnames(coachingdata), collapse = ", ")))
+
+# splitting date to year&month to create timeperiods
+required.coaching.cols$Date.of.Event.Visit <- as.Date(required.coaching.cols$Date.of.Event.Visit, format = "%Y-%m-%d")
+required.coaching.cols$Year <- as.integer(format(required.coaching.cols$Date.of.Event.Visit, "%Y"))
+required.coaching.cols$Month <- format(required.coaching.cols$Date.of.Event.Visit, "%b")
+```
+
+```{r}
+
+required.coaching.cols$Duration.of.Event[required.coaching.cols$Duration.of.Event == ""] <- 0
+required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == ""] <- "None"
+
+## setting unique interaction type to columns
+required.coaching.cols$Interaction.Type <- tolower(required.coaching.cols$Interaction.Type)
+unique(required.coaching.cols$Interaction.Type)
+
+required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "in-person"] <- "In-Person"
+
+required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "virtual w/ video" |
+  required.coaching.cols$Interaction.Type == "virtual w/video"] <- "Virtual"
+
+required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "phone/conference call" |
+  required.coaching.cols$Interaction.Type == "conference call" |
+  required.coaching.cols$Interaction.Type == "phone"] <- "Phone"
+
+required.coaching.cols$Interaction.Type[required.coaching.cols$Interaction.Type == "in-person & virtual" |
+  required.coaching.cols$Interaction.Type == "in-person and virtual" |
+  required.coaching.cols$Interaction.Type == "phone"] <- "Virtual&Phone"
+
+
+# one hot encode the Interaction Types
+interaction.required.coaching.cols <- data.table(required.coaching.cols)
+Interaction.Type.Encoded <- dcast(interaction.required.coaching.cols[, list(V1 = 1, State.District.ID, Interaction.Type)], State.District.ID ~ Interaction.Type, fun = sum, value.var = "V1", drop = c(TRUE, FALSE))
+
+# Prepend Interaction_Type in front of each one-hot-encoded feature
+setnames(Interaction.Type.Encoded, setdiff(colnames(Interaction.Type.Encoded), "State.District.ID"), paste0("Interaction.Type_", setdiff(colnames(Interaction.Type.Encoded), "State.District.ID")))
+
+# Join one-hot tables with original dataset
+
+encoded.required.coaching.cols <- data.frame(interaction.required.coaching.cols[Interaction.Type.Encoded, on = "State.District.ID"])
+
+months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+
+date.to.period <- function(Month, Year) {
+  formatted.date <- ""
+  month.to.number <- match(Month, month.abb)
+  formatted.date <- ifelse(month.to.number > 0 & month.to.number < 3, paste0("Aug", Year - 1, "-", "Feb", Year), ifelse(month.to.number >= 3 & month.to.number < 8, paste0("Mar", Year, "-", "July", Year), paste0("Aug", Year, "-", "Feb", Year + 1)))
+  return(formatted.date)
+}
+
+# encoded.required.coaching.cols$Period.of.Event <- date.to.period(encoded.required.coaching.cols$Month, encoded.required.coaching.cols$Year)
+
+
+# handling n/a values & generalizing values
+for (j in 6:(ncol(encoded.required.coaching.cols))) {
+  print(names(encoded.required.coaching.cols)[j])
+  encoded.required.coaching.cols[, j][is.na(encoded.required.coaching.cols[, j])] <- 0
+  encoded.required.coaching.cols[, j][encoded.required.coaching.cols[, j] == "Yes" |
+    encoded.required.coaching.cols[, j] == "yes"] <- 1
+  encoded.required.coaching.cols[, j][encoded.required.coaching.cols[, j] == "No" |
+    encoded.required.coaching.cols[, j] == ""] <- 0
+}
+
+coaching.dt <- as.data.table(encoded.required.coaching.cols)
+coaching_mean_cols <- names(encoded.required.coaching.cols[c(6:32, 35:39)])
+coaching.dt <- as.data.table(encoded.required.coaching.cols)
+
+
+# coaching.dt <- coaching.dt[!coaching.dt$Period.of.Event == "Aug0-Feb1"]
+# coaching.dt <- coaching.dt[!coaching.dt$Period.of.Event == "Mar0-July0"]
+# coaching.dt <- coaching.dt[!coaching.dt$Period.of.Event == "Aug2-Feb3"]
+
+## aggregrating coaching logs using State.District.ID & Period.of.Event
+coaching.dt[, coaching_mean_cols] <- coaching.dt[, lapply(.SD, as.numeric), .SDcols = coaching_mean_cols]
+coaching.aggregate <- coaching.dt[, lapply(.SD, mean), .SDcols = coaching_mean_cols, by = c("State.District.ID", "Year")]
+
+
+# earlier
+dim(coaching.aggregate)
+# [1] 746  34
+
+```
+
+
+```{r}
+exclude.cols <- c("State.District.ID", "Year")
+
+for (col in colnames(coaching.aggregate)) {
+  if (!(col %in% exclude.cols)) {
+    setnames(coaching.aggregate, col, paste0("coaching_", col))
+  }
+}
+
+
+ic.cwis.nces.computed.combined.dt <- fread("./Data Sources CSV/ic.cwis.nces.computed.combined.csv")
+ic.cwis.nces.computed.combined.dt[, Year := year]
+
+ic.cwis.nces.cl.computed.combined.dt <- ic.cwis.nces.computed.combined.dt[coaching.aggregate, on = .(Year, State.District.ID)]
+ic.cwis.nces.cl.computed.combined.dt <- ic.cwis.nces.cl.computed.combined.dt[complete.cases(ic.cwis.nces.cl.computed.combined.dt), drop = TRUE]
+
+write.csv(ic.cwis.nces.cl.computed.combined.dt, "./Data Sources CSV/ic.cwis.nces.cl.computed.combined.csv")
+
+```
+
+```{r}
+### CWIS
+cwisdata <- read.csv("~/Documents/CS685/data/cwis_survey data-Table 1.csv")
+required.cwis.cols <- cwisdata[, c(
+  "State.District.ID", "State.School.ID", "experience", "member_grade_span_level",
+  "admin_receive_coaching", "district_accept_questions", "ETL.AVERAGE", "CFA.AVERAGE",
+  "DBDM.AVERAGE", "LEAD.AVERAGE", "PD.AVERAGE", "common_practices_addresses_standard",
+  "common_practices_teacher_use_cfa", "common_practices_student_use_cfa",
+  "common_practices_cfa_reteaching", "collab_teams_reviews_data",
+  "collab_teams_positive_interaction", "collab_teams_effective_teaming",
+  "collab_teams_data_collaboration", "collab_teams_analyze_during_meeting_now",
+  "collab_teams_use_data_analysis_system_now", "collab_teams_learning_analyzed_p1",
+  "collab_teams_systematically_analyze_p2", "collab_teams_modify_instruction_p3",
+  "collab_teams_reflecting_instruction_p4", "collab_teams_review_learning_targets_p5",
+  "prof_learning_leader_manage_expectations", "prof_learning_leader_teacher_observation",
+  "prof_learning_leader_committed_instruction", "prof_learning_leader_collab_teams",
+  "prof_learning_self_dev_instructional_practices", "prof_learning_self_receive_coaching",
+  "prof_learning_self_dev_monitor_student", "prof_learning_self_receive_feedback",
+  "admin_clarified_purpose", "admin_conv_gone_well", "admin_conv_relevant_data",
+  "admin_add_suggestions", "admin_provide_rationales", "admin_provide_opportunity",
+  "admin_supported_suggestions", "admin_guided_practice", "admin_identify_next_steps",
+  "admin_paced_conversation", "district_identified_strategies", "district_deploy_central_office",
+  "district_deploy_principals", "district_use_aligned_teams", "district_using_technology",
+  "district_integrate_technology", "district_utilize_virtual_learning", "district_monitor_focused_improvement",
+  "created_at", "collab_teams_analyze_during_meeting_historical",
+  "collab_teams_use_data_analysis_system_historical", "employed_last_year",
+  "admin_expected_meet_during_covid", "admin_collab_teams_reviews_data_now",
+  "admin_collab_teams_reviews_data_pre_covid", "admin_collab_teams_positive_interaction_now",
+  "admin_collab_teams_positive_interaction_pre_covid", "admin_collab_teams_effective_teaming_now",
+  "admin_collab_teams_effective_teaming_pre_covid", "admin_collab_teams_analyze_during_meeting_now",
+  "admin_collab_teams_analyze_during_meeting_pre_covid", "admin_collab_teams_use_data_analysis_system_now",
+  "admin_collab_teams_use_data_analysis_system_pre_covid", "admin_prof_learning_self_dev_instructional_practices_now",
+  "admin_prof_learning_self_dev_instructional_practices_pre_covid", "admin_prof_learning_self_receive_coaching_now",
+  "admin_prof_learning_self_receive_coaching_pre_covid", "admin_prof_learning_self_dev_monitor_student_now",
+  "admin_prof_learning_self_dev_monitor_student_pre_covid", "admin_prof_learning_self_receive_feedback_now",
+  "admin_prof_learning_self_receive_feedback_pre_covid", "admin_common_practices_can_statements_now",
+  "admin_common_practices_can_statements_pre_covid", "admin_common_practices_student_work_now",
+  "admin_common_practices_student_work_pre_covid", "admin_common_practices_self_assessment_now",
+  "admin_common_practices_self_assessment_pre_covid", "admin_common_practices_receive_feedback_now",
+  "admin_common_practices_receive_feedback_pre_covid", "admin_common_practices_student_feedback_now",
+  "admin_common_practices_student_feedback_pre_covid", "admin_common_practices_state_criteria_now",
+  "admin_common_practices_state_criteria_pre_covid", "admin_common_practices_student_review_cfa_now",
+  "admin_common_practices_student_review_cfa_pre_covid"
+)]
+
+dim(required.cwis.cols) # 80267 obs. of  89 variables:
+required.cwis.cols$experience[is.na(required.cwis.cols$experience)] <- 0
+
+required.cwis.cols$created_at[is.na(required.cwis.cols$created_at) | required.cwis.cols$created_at == ""] <- "2017-01-01"
+required.cwis.cols$created_at <- gsub(" .*", "", required.cwis.cols$created_at)
+
+
+required.cwis.cols$created_at <- as.Date(required.cwis.cols$created_at, format = "%Y-%m-%d")
+required.cwis.cols$Year <- as.integer(format(required.cwis.cols$created_at, "%y"))
+required.cwis.cols$Month <- format(required.cwis.cols$created_at, "%b")
+
+
+required.cwis.cols$Period.of.Event <- date.to.period(required.cwis.cols$Month, required.cwis.cols$Year)
+
+
+na_strings <- c("NA", "N A", "N / A", "N/A", "N/ A", "Not Available", "NOt available")
+true_string <- c("TRUE", "Yes", "t", "1")
+false_string <- c("FALSE", "No", "f", "0", "")
+
+required.cwis.cols <- required.cwis.cols %>% relocate(created_at, .after = last_col())
+
+# handling missing values & generalizing values
+for (j in 3:(ncol(required.cwis.cols) - 4)) {
+  required.cwis.cols[, j][is.na(required.cwis.cols[, j])] <- 0
+  required.cwis.cols[, j][required.cwis.cols[, j] == "TRUE" |
+    required.cwis.cols[, j] == "Yes" |
+    required.cwis.cols[, j] == "t" |
+    required.cwis.cols[, j] == "1"] <- 1
+  required.cwis.cols[, j][required.cwis.cols[, j] == "FALSE" |
+    required.cwis.cols[, j] == "No" |
+    required.cwis.cols[, j] == "f" |
+    required.cwis.cols[, j] == "0" |
+    required.cwis.cols[, j] == ""] <- 0
+}
+
+cwis.dt <- as.data.table(required.cwis.cols)
+cwis.df <- required.cwis.cols
+
+message(sprintf(" cwis.dt : %s\n", paste(colnames(cwis.dt), collapse = ", ")))
+
+ncwis_mean_cols <- names(required.cwis.cols[c(3:88)])
+
+## aggregrating cwis using State.District.ID & Period.of.Event
+
+
+
+cwis.dt[, ncwis_mean_cols] <- cwis.dt[, lapply(.SD, as.numeric), .SDcols = ncwis_mean_cols]
+cwis.aggregate <- cwis.dt[, lapply(.SD, mean), .SDcols = ncwis_mean_cols, by = c("State.District.ID", "Period.of.Event")]
+
+
+## joining cwis & coaching logs
+cwis.coaching.aggregrate <- coaching.aggregate[cwis.aggregate, on = .(State.District.ID, Period.of.Event), nomatch = NULL]
+
+dim(cwis.coaching.aggregrate)
+# [1] 334 120
+
+outersect <- function(x, y) {
+  sort(c(
+    x[!x %in% y],
+    y[!y %in% x]
+  ))
+}
+
+
+intersected.cwis.coaching <- (intersect(unique(paste0(coaching.aggregate$State.District.ID, "_", coaching.aggregate$Period.of.Event)), unique(paste0(cwis.aggregate$State.District.ID, "_", cwis.aggregate$Period.of.Event))))
+intersected.cwis.coaching.districts <- sapply(strsplit(as.character(intersected.cwis.coaching), "_"), "[", 1)
+
+outersected.cwis.coaching <- (outersect(unique(paste0(coaching.aggregate$State.District.ID, "_", coaching.aggregate$Period.of.Event)), unique(paste0(cwis.aggregate$State.District.ID, "_", cwis.aggregate$Period.of.Event))))
+outersected.cwis.coaching.districts <- sapply(strsplit(as.character(outersected.cwis.coaching), "_"), "[", 1)
+
+mismatch_of_period <- intersect(outersected.cwis.coaching.districts, intersected.cwis.coaching.districts)
+# length(mismatch_of_period)
+# [1] 148
+
+mismatch_of_period.cwis <- intersect(mismatch_of_period, unique(cwis.aggregate$State.District.ID))
+length(mismatch_of_period.cwis)
+
+mismatch_of_period.coaching <- intersect(mismatch_of_period, unique(coaching.aggregate$State.District.ID))
+length(mismatch_of_period.coaching)
+
+
+outersect.cwis.coaching <- outersect(unique(paste0(coaching.aggregate$State.District.ID, "_", coaching.aggregate$Period.of.Event)), unique(paste0(cwis.aggregate$State.District.ID, "_", cwis.aggregate$Period.of.Event)))
+
+outersect.cwis <- intersect(outersect.cwis.coaching, unique(paste0(cwis.aggregate$State.District.ID, "_", cwis.aggregate$Period.of.Event)))
+
+outersect.coaching <- intersect(outersect.cwis.coaching, unique(paste0(coaching.aggregate$State.District.ID, "_", coaching.aggregate$Period.of.Event)))
+
+outersect.cwis.coaching <- outersect(unique(paste0(coaching.aggregate$State.District.ID)), unique(paste0(cwis.aggregate$State.District.ID)))
+length(outersect.cwis.coaching)
+outersect.cwis <- intersect(outersect.cwis.coaching, unique(paste0(cwis.aggregate$State.District.ID)))
+length(outersect.cwis)
+outersect.coaching <- intersect(outersect.cwis.coaching, unique(paste0(coaching.aggregate$State.District.ID)))
+length(outersect.coaching)
+
+
+
+intersected.cwis.coaching <- length(intersect(unique(coaching.aggregate$State.District.ID), unique(cwis.aggregate$State.District.ID)))
+
+
+length(outersect(outersect.coaching, outersect.cwis))
+
+intersect(outersect.coaching, outersect.cwis)
+
+nces.computed.dt <- read.csv("~/Documents/CS685/data/cwis.nces.computed.combined.csv")
+
+## joining cwis & coaching logs & nces
+cwis.coaching.aggregate.nces <- cwis.coaching.aggregrate[nces.computed.dt, on = .(State.District.ID), nomatch = NULL]
+
+dim(cwis.coaching.aggregate.nces)
+# [1] 331 164
+write.csv(cwis.coaching.aggregate.nces, "~/Documents/CS685/data/aggregated/nces_coaching_cwis_aggregrate_districts.csv", row.names = FALSE)
+
+
+aggregted <- read.csv("~/Documents/CS685/data/aggregated/nces_coaching_cwis_aggregrate_districts.csv", header = TRUE)
+dim(aggregted)
+```
+

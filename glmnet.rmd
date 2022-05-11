@@ -15,9 +15,11 @@ library(mlr3extralearners)
 csv.data.loc <- "./Data Sources CSV"
 ic.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.computed.combined.csv", sep = "")
 cwis.joined.dt.loc <- paste(csv.data.loc, "/cwis.nces.computed.combined.csv", sep = "")
+cl.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.cl.computed.combined.csv", sep = "")
 
 ic.joined.dt <- as.data.table(read.csv(ic.joined.dt.loc))
 cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
+cl.joined.dt <- as.data.table(read.csv(cl.joined.dt.loc))
 ```
 
 ```{r}
@@ -28,6 +30,9 @@ ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
 ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
 ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
 ic.predict.cfa.dt <- ic.predict.cfa.dt[complete.cases(ic.predict.cfa.dt[, ]), ]
+cl.predict.dt <- cl.joined.dt[, !..exclude.cols]
+cl.predict.no.cfa.dt <- cl.joined.dt[, !c("CFA_avg", ..exclude.cols)]
+cl.predict.cfa.dt <- cl.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
 ```
 
 ```{r}
@@ -40,9 +45,15 @@ task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa
 
 task.cfa.regr <- TaskRegr$new(id = "cfa", backend = ic.predict.cfa.dt, target = "CFA_avg")
 
-task.name.vec <- c("etlp", "etlp.no.cfa", "cfa")
+task.cl.regr <- TaskRegr$new(id = "cl", backend = cl.predict.dt, target = "ETLP_avg")
 
-task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr)
+task.cl.no.cfa.regr <- TaskRegr$new(id = "cl.no.cfa", backend = cl.predict.no.cfa.dt, target = "ETLP_avg")
+
+task.cl.cfa.regr <- TaskRegr$new(id = "cl.cfa", backend = cl.predict.cfa.dt, target = "CFA_avg")
+
+task.name.vec <- c("etlp", "etlp.no.cfa", "cfa", "cl", "cl.no.cfa", "cl.cfa")
+
+task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr, task.cl.regr, task.cl.no.cfa.regr, task.cl.cfa.regr)
 
 resampling <- rsmp("cv", folds = num.folds)
 # cv_glmnet returns 2 models, one with s1 and one with minimum
@@ -111,11 +122,24 @@ err.dt <- do.call(rbind, score.result.list)
 
 LASSO models prove to be much more accurate than the featureless model, disproving the null hypothesis. 
 ```{r}
+
 library(ggplot2)
 method.levels <- err.dt[, .(mean = mean(mse.loss)), by = method][order(-mean), method]
 err.dt[, Method := factor(method, method.levels)]
 err.plot <- ggplot() +
+  geom_point(data = err.dt, aes(x = mse.loss, y = Method)) +
+  ggtitle(paste("MSE loss by method and task")) +
+  facet_grid(task.name ~ .)
+
+png(filename = "regr.loss.mse.all.png", width = 6, height = 6, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+
+
+
+err.plot <- ggplot() +
   geom_point(data = err.dt[Method %in% c("regr.cv_glmnet.min", "regr.cv_glmnet.1se", "regr.featureless")], aes(x = mse.loss, y = Method)) +
+  ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ ., labeller = label_both)
 
 png(filename = "regr.loss.mse.both.png", width = 6, height = 4, unit = "in", res = 200)
@@ -123,10 +147,9 @@ print(err.plot)
 dev.off()
 
 
-method.levels <- err.dt[, .(mean = mean(mse.loss)), by = method][order(-mean), method]
-err.dt[, Method := factor(method, method.levels)]
 err.plot <- ggplot() +
   geom_point(data = err.dt[Method %in% c("regr.cv_glmnet.min", "regr.cv_glmnet.1se", "regr.featureless") & task.name == "etlp"], aes(x = mse.loss, y = Method)) +
+  ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ ., labeller = label_both)
 
 png(filename = "regr.loss.mse.etlp.png", width = 6, height = 4, unit = "in", res = 200)
@@ -173,11 +196,12 @@ for (method.select in glm.method.v) {
   for (task.name in task.name.vec) {
     var.coef.plot <- ggplot() +
       geom_point(data = glm.coef.dt[method.select == method & task_id == task.name & count > 0], aes(x = coef, y = var)) +
-      facet_grid(count ~ ., scales = "free", space = "free")
+      facet_grid(count ~ ., scales = "free", space = "free") +
+      ggtitle(paste("coefficients of model ", method.select, " in task ", task.name)) 
     # scale_y_continuous(breaks=1:num.folds)
     filename <- paste(method.select, task.name, ".png", sep = "_")
     print(filename)
-    png(filename = filename, width = 8, height = 6, unit = "in", res = 200)
+    png(filename = filename, width = 8, height = 8, unit = "in", res = 200)
     print(var.coef.plot)
     dev.off()
   }

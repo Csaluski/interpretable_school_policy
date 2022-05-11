@@ -135,6 +135,17 @@ setnames(ic.dt, "currentSchoolYear", "year")
 
 setnames(ic.dt, "District.Code", "State.District.ID")
 
+# set the columns to the correct names
+ic.col.file <- "./Data Sources/DCI Data/Implementation Checklist/Cross_Walk.xlsx"
+ic.col.dt <- as.data.table(read.xlsx(ic.col.file, colNames = FALSE, cols=2:3))
+setnames(ic.col.dt, colnames(ic.col.dt), c("name", "description"))
+
+for (index in 1:nrow(ic.col.dt)) {
+  ic.col.name <- ic.col.dt[index]$name
+  ic.col.desc <- str_trunc(ic.col.dt[index]$description, 50)
+  setnames(ic.dt, ic.col.name, ic.col.desc)
+}
+
 cwis.avg.file <- "Data Sources/Data Research Questions/CWIS_avg_per_domain_per_district.csv.xlsx"
 cwis.avg.dt <- as.data.table(read.xlsx(cwis.avg.file))
 # cwis.avg.dt <- cwis.avg.dt[ic.district.cols, on = .(State.District.ID)]
