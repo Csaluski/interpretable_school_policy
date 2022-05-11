@@ -1,0 +1,206 @@
+---
+title: "Correlation of Coaching Sessions with ETLP"
+author: "Charles Saluski"
+---
+
+```{r}
+library(data.table)
+library(caret)
+library(animint2)
+
+coaching.agg.loc <- "./Data Sources CSV/coaching.aggregation.csv"
+glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
+
+exclude.cols <- c("State.District.ID", "year")
+
+coaching.agg <- fread(coaching.agg.loc)
+glm.coef.dt <- fread(glm.coef.loc)
+
+cormat.raw <- cor(coaching.agg[, !..exclude.cols], method="pearson")
+cormat.long.full <- data.table(reshape2::melt(cormat.raw))
+cormat.keep <- reshape2::melt(lower.tri(cormat.raw, diag = FALSE))
+coach.cormat.dt <- data.table(reshape2::melt(cormat.raw)[cormat.keep$value == TRUE,])
+```
+
+```{r}
+setnames(cormat.long.full, "Var1", "var")
+setnames(cormat.long.full, "Var2", "corr.var")
+setnames(cormat.long.full, "value", "corr.coef")
+
+setnames(coach.cormat.dt, "Var1", "var")
+setnames(coach.cormat.dt, "Var2", "corr.var")
+setnames(coach.cormat.dt, "value", "corr.coef")
+
+glm.vars <- glm.coef.dt$var
+glm.new.vars <- sapply(glm.vars, function(x) { sub("coaching_", "", x) })
+glm.coef.dt$var <- glm.new.vars
+
+
+# normalize <- preProcess(coaching.agg[, !..exclude.cols], method=c("range"))
+# normal.coaching.agg <- predict(normalize, coaching.agg[, !..exclude.cols])
+# coaching.agg <- data.table(coaching.agg[, ..exclude.cols], normal.coaching.agg)
+
+# make a giant long data table of every var1 var2 val1 val2
+long.coaching.agg.var <- melt(coaching.agg, id.vars = c("State.District.ID", "year"), variable.name = "var", value.name = "var.val")
+long.coaching.agg.corr.var <- melt(coaching.agg, id.vars = c("State.District.ID", "year"), variable.name = "corr.var", value.name = "corr.var.val")
+
+scatter.dt <- long.coaching.agg.var[long.coaching.agg.corr.var, on = c("State.District.ID", "year"), allow.cartesian = TRUE]
+
+rm("long.coaching.agg.var", "long.coaching.agg.corr.var")
+
+```
+
+```{r}
+correlated.dt <- cormat.long.full[glm.coef.dt, , on="var", allow.cartesian=TRUE, nomatch=NULL]
+# This doesn't work and I don't understand why.
+setorderv(correlated.dt, c("var", "corr.var"))
+
+```
+
+
+
+```{r}
+var.names <- unique(correlated.dt$var)
+
+select.var.dt <- data.table(unique(correlated.dt[method== "lambda.min" & task_id=="cl" , .(var, count)]))
+
+coef.corr.dt <- copy(cormat.long.full)
+# Swizzle some names around so that we remap one name to another
+setnames(coef.corr.dt, c("var", "corr.var", "corr.coef"), c("var", "corr.var", "corr.coef"))
+coef.corr.dt <- cormat.long.full[select.var.dt, , on=c(corr.var = "var")]
+
+# subset by variable then sort by absolute value of correlation coefficient
+# assign every variable a y index
+coef.corr.dt[ 
+  order(abs(corr.coef)),
+  var.order := order(abs(corr.coef), decreasing=TRUE),
+  by = var
+]
+
+coaching.corr.plot <- ggplot(coach.cormat.dt, aes(x=var, y=corr.var, fill=corr.coef)) +
+  geom_tile() + 
+  coord_equal() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limit=c(-1,1)) +
+  # TODO this is not a function in animint2, could be fun to implement it later
+  # scale_x_discrete(position = "top") +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1),
+    axis.text.y = element_text(vjust = 0.5, size = 10, hjust = 1)) +
+  theme_animint(height = 800, width = 800)
+
+var.coef.plot <- ggplot() +
+  geom_segment(
+    data = coef.corr.dt,
+    # This is so close, but it fills each count facet with every var instead of
+    # just the vars with that count
+    aes(y = corr.var, yend = corr.var, x = -Inf, xend = Inf, color = corr.coef),
+    size = 10,
+    showSelected="var"
+    ) +
+  geom_point(
+    data=glm.coef.dt[
+      method== "lambda.min" & task_id=="cl" & var %in% var.names 
+      ], 
+    aes(x = coef, y = var)
+    ) +
+  geom_segment(
+    data = select.var.dt,
+    aes(y = var, yend = var, x = -Inf, xend = Inf),
+    color = "black",
+    clickSelects = "var",
+    size = 10,
+    alpha=0.5
+    ) +
+  scale_color_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limit = c(-1,1)
+    ) +
+  facet_grid(count ~ ., scales = "free", space = "free") +
+  labs(
+    Title = "Variables to predict ETLP\nClick to select main variable",
+    x = "Variable coefficient",
+    y = "Variable"
+  ) +
+  theme_animint(height = 600, width = 800)
+
+corr.vec.plot <- ggplot() +
+  # trying to use geom_raster silently breaks the entire plot system here, 
+  # seems like a major bug with animint2
+  geom_tile(
+    data = coef.corr.dt, 
+    aes(x=1, y=var.order, fill=corr.coef, key = corr.var),
+    showSelected="var",
+    clickSelects="corr.var"
+    ) +
+  geom_text(data = coef.corr.dt, 
+    aes(x=2, y=var.order, label=corr.var), 
+    size=10,
+    showSelected="var",
+    hjust=0,
+    # TODO Character alignment is not in the version of ggplot2 that animint is 
+    # based off, could be worth porting
+    # hjust = "right"
+    ) +
+  coord_equal() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limit=c(-1,1)) +
+  labs(
+    title = "Variables Most Correlated") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "none"
+  ) +
+  theme_animint(height = 400, width = 300)
+
+var.scatter.plot <- ggplot() +
+  geom_point(
+    data = scatter.dt, 
+    aes(x=var.val, y=corr.var.val),
+    showSelected = c("var", "corr.var"),
+  ) +
+  geom_label(
+    data = coef.corr.dt,
+    aes(label = var),
+    x = 0,
+    y = 0,
+  )+
+  geom_label(
+    data = coef.corr.dt,
+    aes(label = corr.var),
+    x = 0,
+    y = 0,
+    angle = 90,
+  )+
+  labs(
+    title = "Scatter Plot of Selected Variables",
+    x = "Selected main variable",
+    y = "Selected secondary variable"
+    ) +
+  theme_animint(
+    update_axes=c("x", "y"),
+    height = 400,
+    width = 400
+    )
+
+plot.list <- list()
+
+# plot.list$correlationheatmap <- coaching.corr.plot
+plot.list$varcoef <- var.coef.plot
+plot.list$coefvec <- corr.vec.plot
+plot.list$varscatter <- var.scatter.plot
+plot.list$duration <- list("var" = 1000, "corr.var" = 1000)
+
+# I use a different local web server since Chrome is finnicky with CORS, change
+# open.browser to TRUE if you want to try it.
+animint2dir(plot.list, out.dir = "./animint_out/correlation/", open.browser=FALSE)
+```
+
+```{r}
+coaching.corr.plot
+```
