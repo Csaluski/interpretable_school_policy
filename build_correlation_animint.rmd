@@ -1,0 +1,319 @@
+---
+title: "Creating a function to create correlation plots as shown in coaching_correlation.rmd"
+author: "Charles Saluski"
+---
+
+```{r}
+# Note that if caret is used to normalize data then it must be imported before
+# animint2, as it imports ggplot2 and will shadow functions from it.
+library(data.table)
+library(caret)
+library(animint2)
+```
+
+```{r} 
+# Should this have some form of height calculation for the coefficient and
+# correlation plots? As is, trying to plot more than 30 variables can start 
+# getting really cramped, but we also have to be aware of the space complexity 
+# of obs * vars^2, which gets a bit unweildy with large counts of vars or 
+# observations
+# I think animint2 has some way to work with wide data tables instead of long, 
+# but I don't know how to work with that option yet. That would allow us to 
+# utilize the original data tables, avoiding additional space being required
+build_correlation_animint <- function(original_dt,
+                                      model_output_dt,
+                                      id_vars_vec,
+                                      exclude_vars_vec = NULL,
+                                      normalize = FALSE) {
+
+  # Variables to exclude can be just the id variables, but if there's more
+  # then the user will pass them to be excluded.
+  if (missing(exclude_vars_vec)) {
+    exclude_vars_vec <- id_vars_vec
+  }
+
+  original_dt <- original_dt[, !..exclude_vars_vec]
+  model_output_dt <- model_output_dt[!var %in% exclude_vars_vec]
+
+  no.corr.cols <- c(id_vars_vec, exclude_vars_vec)
+
+  cormat.raw <- cor(
+    original_dt[, !..no.corr.cols],
+    method = "pearson"
+  )
+
+  cormat.long.full <- data.table(reshape2::melt(cormat.raw))
+  cormat.keep <- reshape2::melt(lower.tri(cormat.raw, diag = FALSE))
+  cormat.display.dt <- data.table(
+    reshape2::melt(cormat.raw)[cormat.keep$value == TRUE, ]
+  )
+
+  setnames(cormat.long.full, "Var1", "var")
+  setnames(cormat.long.full, "Var2", "corr.var")
+  setnames(cormat.long.full, "value", "corr.coef")
+
+  setnames(cormat.display.dt, "Var1", "var")
+  setnames(cormat.display.dt, "Var2", "corr.var")
+  setnames(cormat.display.dt, "value", "corr.coef")
+
+  # make a giant long data table of every var1 var2 val1 val2
+  long.data.var <- melt(
+    original_dt[, !..exclude_vars_vec],
+    id.vars = id_vars_vec,
+    variable.name = "var",
+    value.name = "var.val"
+  )
+  long.data.corr.var <- melt(
+    original_dt[, !..exclude_vars_vec],
+    id.vars = id_vars_vec,
+    variable.name = "corr.var",
+    value.name = "corr.var.val"
+  )
+
+  scatter.dt <- long.data.var[
+    long.data.corr.var,
+    on = id_vars_vec,
+    allow.cartesian = TRUE
+  ]
+  # these intermediary data tables might be big, so save a little memory and
+  # get rid of them
+  rm("long.data.var", "long.data.corr.var")
+
+  var.names <- unique(cormat.long.full$var)
+
+
+  select.var.dt <- data.table(unique(model_output_dt[, .(var, count)]))
+  select.var.dt <- select.var.dt[var %in% var.names]
+
+  coef.corr.dt <- copy(cormat.long.full)
+  # Swizzle some names around so that we remap one name to another
+  setnames(
+    coef.corr.dt,
+    c("var", "corr.var", "corr.coef"),
+    c("var", "corr.var", "corr.coef")
+  )
+
+  coef.corr.dt <- cormat.long.full[select.var.dt, , on = c(corr.var = "var")]
+
+
+  # subset by variable then sort by absolute value of correlation coefficient
+  # assign every variable a y index
+  coef.corr.dt[
+    order(abs(corr.coef)),
+    var.order := order(abs(corr.coef), decreasing = TRUE),
+    by = var
+  ]
+
+  var.coef.plot <- ggplot() +
+    geom_segment(
+      data = coef.corr.dt,
+      aes(
+        y = corr.var,
+        yend = corr.var,
+        x = -Inf,
+        xend = Inf,
+        color = corr.coef
+      ),
+      size = 10,
+      showSelected = "var"
+    ) +
+    geom_point(
+      data = model_output_dt[var %in% var.names],
+      aes(x = coef, y = var)
+    ) +
+    geom_segment(
+      data = select.var.dt,
+      aes(y = var, yend = var, x = -Inf, xend = Inf),
+      color = "black",
+      clickSelects = "var",
+      size = 10,
+      alpha = 0.5
+    ) +
+    scale_color_gradient2(
+      low = "blue",
+      mid = "white",
+      high = "red",
+      midpoint = 0,
+      limit = c(-1, 1)
+    ) +
+    facet_grid(count ~ ., scales = "free", space = "free") +
+    labs(
+      Title = "Variables that predict output\nClick to select main variable",
+      x = "Variable coefficient",
+      y = "Variable"
+    ) +
+    theme_animint(height = 600, width = 800)
+
+  corr.vec.plot <- ggplot() +
+    # trying to use geom_raster silently breaks the entire plot system here,
+    # seems like a major bug with animint2
+    geom_tile(
+      data = coef.corr.dt,
+      aes(x = 1, y = var.order, fill = corr.coef, key = corr.var),
+      showSelected = "var",
+      clickSelects = "corr.var"
+    ) +
+    geom_text(
+      data = coef.corr.dt,
+      aes(x = 2, y = var.order, label = corr.var),
+      size = 10,
+      showSelected = "var",
+      hjust = 0,
+      # TODO Character alignment is not in the version of ggplot2 that animint is
+      # based off, could be worth porting
+      # hjust = "right"
+    ) +
+    coord_equal() +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limit = c(-1, 1)) +
+    labs(
+      title = "Variables Most Correlated"
+    ) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      legend.position = "none"
+    ) +
+    theme_animint(height = 400, width = 300)
+
+  var.scatter.plot <- ggplot() +
+    geom_point(
+      data = scatter.dt,
+      aes(x = var.val, y = corr.var.val),
+      showSelected = c("var", "corr.var"),
+      chunk_vars = c("var")
+    ) +
+    geom_label(
+      data = coef.corr.dt,
+      aes(label = var),
+      x = 0,
+      y = 0,
+    ) +
+    geom_label(
+      data = coef.corr.dt,
+      aes(label = corr.var),
+      x = 0,
+      y = 0,
+      angle = 90,
+    ) +
+    labs(
+      title = "Scatter Plot of Selected Variables",
+      x = "Selected main variable",
+      y = "Selected secondary variable"
+    ) +
+    theme_animint(
+      update_axes = c("x", "y"),
+      height = 400,
+      width = 400
+    )
+
+  plot.list <- list()
+
+  # plot.list$correlationheatmap <- coaching.corr.plot
+  plot.list$varcoef <- var.coef.plot
+  plot.list$coefvec <- corr.vec.plot
+  plot.list$varscatter <- var.scatter.plot
+  plot.list$duration <- list("var" = 1000, "corr.var" = 1000)
+
+
+  plot.list
+}
+```
+
+
+```{r}
+library(openxlsx)
+library(stringr)
+
+ic.file <- "Data Sources/Data Research Questions/RQ_IC.csv.xlsx"
+
+ic.dt <- as.data.table(read.xlsx(ic.file))
+ic.dt <- ic.dt[complete.cases(ic.dt),]
+ic.district.cols <- unique(ic.dt[["District.Code"]])
+valid.ic.rows <- grepl("MO", ic.district.cols)
+ic.district.cols <- ic.district.cols[valid.ic.rows]
+setnames(ic.dt, "currentSchoolYear", "year")
+
+setnames(ic.dt, "District.Code", "State.District.ID")
+
+
+# set the columns to the correct names
+ic.col.file <- "./Data Sources/DCI Data/Implementation Checklist/Cross_Walk.xlsx"
+ic.col.dt <- as.data.table(read.xlsx(ic.col.file, colNames = FALSE, cols=2:3))
+setnames(ic.col.dt, colnames(ic.col.dt), c("name", "description"))
+
+
+for (index in 1:nrow(ic.col.dt)) {
+  ic.col.name <- ic.col.dt[index]$name
+  ic.col.desc <- str_trunc(ic.col.dt[index]$description, 50)
+  setnames(ic.dt, ic.col.name, ic.col.desc)
+}
+
+for (col in colnames(ic.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
+  setnames(ic.dt, col, new_name)
+}
+
+glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
+
+glm.coef.dt <- fread(glm.coef.loc)
+glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "etlp.no.cfa"]
+
+for (col in colnames(glm.coef.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
+  setnames(glm.coef.dt, col, new_name)
+}
+```
+
+```{r}
+id.cols <- c("State.District.ID", "year")
+ic.exclude.cols <- colnames(ic.dt)[
+  !(
+    as.vector(sapply(ic.dt, class)) %in% c("numeric", "int")
+    | (colnames(ic.dt) %in% id.cols)
+    )
+  ]
+
+ic.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols)
+ic.vis$title <- "Correlation of Integration Checklist Variables with GLM models"
+
+animint2dir(ic.vis, out.dir = "./animint_out/ic", open.browser = FALSE)
+animint2gist(ic.vis)
+rm("ic.vis")
+```
+
+We really want a way to visualize correlation across multiple data sets, maybe
+by only going with the vars that only have count > 0?
+
+```{r}
+full.joined.loc <- "./Data Sources CSV/ic.cwis.nces.computed.combined.csv"
+joined.dt <- fread(full.joined.loc)
+joined.dt <- joined.dt[complete.cases(joined.dt)]
+
+for (col in colnames(joined.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
+  setnames(joined.dt, col, new_name)
+}
+
+glm.coef.dt <- glm.coef.dt[count > 0]
+
+selected.vars <- unique(glm.coef.dt$var)
+keep.cols <- c(selected.vars, id.cols)
+
+joined.exclude.cols <- colnames(joined.dt)[
+  !(
+    (as.vector(sapply(joined.dt, class)) %in% c("numeric", "int"))
+    | (colnames(joined.dt) %in% (id.cols))
+    | (colnames(joined.dt) %in% (keep.cols))
+  )
+]
+
+joined.vis <- build_correlation_animint(joined.dt, glm.coef.dt, id.cols, joined.exclude.cols)
+joined.vis$title <- "Correlation of Full Data Set Variables with GLM models"
+
+animint2dir(joined.vis, out.dir = "./animint_out/joined", open.browser = FALSE)
+animint2gist(joined.vis)
+rm("joined.vis")
+```

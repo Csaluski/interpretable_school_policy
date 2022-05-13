@@ -51,7 +51,7 @@ rm("long.coaching.agg.var", "long.coaching.agg.corr.var")
 ```
 
 ```{r}
-correlated.dt <- cormat.long.full[glm.coef.dt, , on="var", allow.cartesian=TRUE, nomatch=NULL]
+correlated.dt <- cormat.long.full[glm.coef.dt, on="var", allow.cartesian=TRUE, nomatch=NULL]
 # This doesn't work and I don't understand why.
 setorderv(correlated.dt, c("var", "corr.var"))
 
@@ -91,8 +91,6 @@ coaching.corr.plot <- ggplot(coach.cormat.dt, aes(x=var, y=corr.var, fill=corr.c
 var.coef.plot <- ggplot() +
   geom_segment(
     data = coef.corr.dt,
-    # This is so close, but it fills each count facet with every var instead of
-    # just the vars with that count
     aes(y = corr.var, yend = corr.var, x = -Inf, xend = Inf, color = corr.coef),
     size = 10,
     showSelected="var"
@@ -163,6 +161,9 @@ var.scatter.plot <- ggplot() +
     data = scatter.dt, 
     aes(x=var.val, y=corr.var.val),
     showSelected = c("var", "corr.var"),
+    # Build bigger chunks instead of the default by var and corr.var, as gists
+    # are only allowed to be up to 300 files
+    chunk_vars = c("var")
   ) +
   geom_label(
     data = coef.corr.dt,
@@ -195,10 +196,14 @@ plot.list$varcoef <- var.coef.plot
 plot.list$coefvec <- corr.vec.plot
 plot.list$varscatter <- var.scatter.plot
 plot.list$duration <- list("var" = 1000, "corr.var" = 1000)
+plot.list$title <- "ETLP Coaching Variable Correlation"
 
 # I use a different local web server since Chrome is finnicky with CORS, change
 # open.browser to TRUE if you want to try it.
 animint2dir(plot.list, out.dir = "./animint_out/correlation/", open.browser=FALSE)
+if (getOption("github.username") != NULL) {
+  animint2gist(plot.list)
+}
 ```
 
 ```{r}
