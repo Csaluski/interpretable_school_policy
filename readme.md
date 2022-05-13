@@ -12,5 +12,5 @@ These models are compared against featureless baseline models, then the results 
 
 Visualizations to view the correlation of different variables combined with their importance in the GLM LASSO were created, and are available [here](https://csaluski.github.io/interpretable_policy_animint/). 
 The repository hosting these visualizations is located [here](https://github.com/Csaluski/interpretable_policy_animint).
-They were created with the code available in the files of [coaching_correlation](./coaching_correlation.rmd) and [build_correlation_animint](./build_correlation_animint.rmd). 
+They were created with the code available in [coaching_correlation](./coaching_correlation.rmd). 
 Further visualizations can easily be built using the code from build_correlation_animint by following the code present in that file, which created the visualizations.

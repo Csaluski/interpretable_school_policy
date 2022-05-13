@@ -28,12 +28,11 @@ build_correlation_animint <- function(original_dt,
 
   # Variables to exclude can be just the id variables, but if there's more
   # then the user will pass them to be excluded.
-  if (missing(exclude_vars_vec)) {
-    exclude_vars_vec <- id_vars_vec
+  if (!missing(exclude_vars_vec)) {
+    print("Excluding variables:")
+    original_dt <- original_dt[, !..exclude_vars_vec]
+    model_output_dt <- model_output_dt[!var %in% exclude_vars_vec]
   }
-
-  original_dt <- original_dt[, !..exclude_vars_vec]
-  model_output_dt <- model_output_dt[!var %in% exclude_vars_vec]
 
   no.corr.cols <- c(id_vars_vec, exclude_vars_vec)
 
@@ -57,6 +56,21 @@ build_correlation_animint <- function(original_dt,
   setnames(cormat.display.dt, "value", "corr.coef")
 
   # make a giant long data table of every var1 var2 val1 val2
+  # after checking if any variables should be excluded
+  if (missing(exclude_vars_vec)) {
+  long.data.var <- melt(
+    original_dt,
+    id.vars = id_vars_vec,
+    variable.name = "var",
+    value.name = "var.val"
+  )
+  long.data.corr.var <- melt(
+    original_dt,
+    id.vars = id_vars_vec,
+    variable.name = "corr.var",
+    value.name = "corr.var.val"
+  ) 
+  } else {
   long.data.var <- melt(
     original_dt[, !..exclude_vars_vec],
     id.vars = id_vars_vec,
@@ -68,7 +82,7 @@ build_correlation_animint <- function(original_dt,
     id.vars = id_vars_vec,
     variable.name = "corr.var",
     value.name = "corr.var.val"
-  )
+  ) }
 
   scatter.dt <- long.data.var[
     long.data.corr.var,
@@ -107,6 +121,14 @@ build_correlation_animint <- function(original_dt,
   var.coef.plot <- ggplot() +
     geom_segment(
       data = coef.corr.dt,
+      aes(y = corr.var, yend = corr.var, x = -Inf, xend = Inf),
+      color = "black",
+      showSelected = "corr.var",
+      size = 13,
+      alpha = 0.5
+    ) +
+    geom_segment(
+      data = coef.corr.dt,
       aes(
         y = corr.var,
         yend = corr.var,
@@ -119,7 +141,7 @@ build_correlation_animint <- function(original_dt,
     ) +
     geom_point(
       data = model_output_dt[var %in% var.names],
-      aes(x = coef, y = var)
+      aes(x = norm.coef, y = var)
     ) +
     geom_segment(
       data = select.var.dt,
@@ -155,9 +177,10 @@ build_correlation_animint <- function(original_dt,
     ) +
     geom_text(
       data = coef.corr.dt,
-      aes(x = 2, y = var.order, label = corr.var),
+      aes(x = 2, y = var.order - 0.3, label = corr.var),
       size = 10,
       showSelected = "var",
+      clickSelects = "corr.var",
       hjust = 0,
       # TODO Character alignment is not in the version of ggplot2 that animint is
       # based off, could be worth porting
@@ -261,6 +284,18 @@ glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
 glm.coef.dt <- fread(glm.coef.loc)
 glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "etlp.no.cfa"]
 
+# normalize the coefficients of the models
+joined.sd <- apply(joined.dt[, ..selected.vars], 2, sd)
+glm.coef.sd.dt <- data.table(
+  sd = joined.sd, 
+  var = names(joined.sd)
+)
+
+glm.coef.dt <- glm.coef.sd.dt[glm.coef.dt, on=c("var")]
+glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
+glm.coef.dt[, norm.coef := coef * sd]
+
+# get rid of weird characters in the column names
 for (col in colnames(glm.coef.dt)) {
   new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
   setnames(glm.coef.dt, col, new_name)
@@ -280,7 +315,9 @@ ic.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols
 ic.vis$title <- "Correlation of Integration Checklist Variables with GLM models"
 
 animint2dir(ic.vis, out.dir = "./animint_out/ic", open.browser = FALSE)
-animint2gist(ic.vis)
+# We are using GitHub Pages to host these now instead of Gist, as the Gist files
+# tend to get too large or too numerous.
+# animint2gist(ic.vis)
 rm("ic.vis")
 ```
 
@@ -288,9 +325,15 @@ We really want a way to visualize correlation across multiple data sets, maybe
 by only going with the vars that only have count > 0?
 
 ```{r}
+id.cols <- c("State.District.ID", "year")
+
 full.joined.loc <- "./Data Sources CSV/ic.cwis.nces.computed.combined.csv"
 joined.dt <- fread(full.joined.loc)
 joined.dt <- joined.dt[complete.cases(joined.dt)]
+
+# Somewhere these turned from underscores to dots, maybe that's the default
+# behavior of write.csv?
+setnames(joined.dt, c("DBDM.avg", "PD.avg"), c("DBDM_avg", "PD_avg"))
 
 for (col in colnames(joined.dt)) {
   new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
@@ -314,6 +357,41 @@ joined.vis <- build_correlation_animint(joined.dt, glm.coef.dt, id.cols, joined.
 joined.vis$title <- "Correlation of Full Data Set Variables with GLM models"
 
 animint2dir(joined.vis, out.dir = "./animint_out/joined", open.browser = FALSE)
-animint2gist(joined.vis)
+
+# animint2gist(joined.vis)
 rm("joined.vis")
+```
+
+
+```{r}
+id.cols <- c("State.District.ID", "year")
+
+glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
+
+glm.coef.dt <- fread(glm.coef.loc)
+glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "cl.no.cfa"]
+
+glm.vars <- glm.coef.dt$var
+glm.new.vars <- sapply(glm.vars, function(x) { sub("coaching_", "", x) })
+glm.coef.dt$var <- glm.new.vars
+
+coaching.agg.loc <- "./Data Sources CSV/coaching.aggregation.csv"
+coaching.agg.dt <- fread(coaching.agg.loc)
+
+
+# normalize the coefficients of the models
+coaching.sd <- apply(coaching.agg.dt[, !..id.cols], 2, sd)
+glm.coef.sd.dt <- data.table(
+  sd = coaching.sd, 
+  var = names(coaching.sd)
+)
+
+glm.coef.dt <- glm.coef.sd.dt[glm.coef.dt, on=c("var")]
+glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
+glm.coef.dt[, norm.coef := coef * sd]
+
+coaching.vis <- build_correlation_animint(coaching.agg.dt, glm.coef.dt, id.cols)
+coaching.vis$title <- "Correlation of Coaching Variables with GLM models"
+
+animint2dir(coaching.vis, out.dir = "./animint_out/coaching", open.browser = FALSE)
 ```
