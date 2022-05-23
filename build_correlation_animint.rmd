@@ -98,8 +98,6 @@ build_correlation_animint <- function(original_dt,
           )$nc
         long.heatmap <- reshape2::melt(current.heatmap.mat)
         list.loc <- paste0(colx, coly, sep = ":")
-        print(min(original_dt[[colx]]))
-        print(max(original_dt[[colx]]))
         xVec <- min(original_dt[[colx]]):max(original_dt[[colx]])
         yVec <- min(original_dt[[coly]]):max(original_dt[[coly]])
         x <- approx(xVec, n = heatmap.resolution)$x
@@ -114,7 +112,6 @@ build_correlation_animint <- function(original_dt,
       }
     }
     heatmap.dt <- do.call(rbind, heatmap.list)
-    View(heatmap.dt)
     # we can't plot the text label at an arbitrary point because of the changes
     # in the coordinate systems, so we have to make a table with each location
     text.plot.dt <- coef.corr.dt[heatmap.dt, on = c("var", "corr.var")]
@@ -126,7 +123,6 @@ build_correlation_animint <- function(original_dt,
       ,
       c("var", "corr.var", "var.x", "var.y", "corr.x", "corr.y")
     ])
-    View(text.plot.dt)
   } else {
     # make a giant long data table of every var1 var2 val1 val2
     # after checking if any variables should be excluded
@@ -500,9 +496,6 @@ for (col in colnames(glm.coef.dt)) {
   new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
   setnames(glm.coef.dt, col, new_name)
 }
-
-
-
 ```
 
 
