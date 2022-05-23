@@ -23,7 +23,7 @@ cl.joined.dt <- as.data.table(read.csv(cl.joined.dt.loc))
 ```
 
 ```{r}
-exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")
+exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10", "V1")
 ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
 ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", ..exclude.cols)]
 ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
@@ -131,7 +131,7 @@ err.plot <- ggplot() +
   ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ .)
 
-png(filename = "regr.loss.mse.all.png", width = 6, height = 6, unit = "in", res = 200)
+png(filename = "./img_out/regr.loss.mse.all.png", width = 6, height = 6, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 
@@ -141,7 +141,7 @@ err.plot <- ggplot() +
   ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ ., labeller = label_both)
 
-png(filename = "regr.loss.mse.both.png", width = 6, height = 4, unit = "in", res = 200)
+png(filename = "./img_out/regr.loss.mse.both.png", width = 6, height = 4, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 
@@ -151,7 +151,7 @@ err.plot <- ggplot() +
   ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ ., labeller = label_both)
 
-png(filename = "regr.loss.mse.etlp.png", width = 6, height = 4, unit = "in", res = 200)
+png(filename = "./img_out/regr.loss.mse.etlp.png", width = 6, height = 4, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 ```
@@ -205,7 +205,7 @@ for (method.select in glm.method.v) {
       facet_grid(count ~ ., scales = "free", space = "free") +
       ggtitle(paste("coefficients of model ", method.select, " in task ", task.name)) 
     # scale_y_continuous(breaks=1:num.folds)
-    filename <- paste(method.select, task.name, ".png", sep = "_")
+    filename <- paste("img_out/",method.select, task.name, ".png", sep = "")
     print(filename)
     png(filename = filename, width = 8, height = 8, unit = "in", res = 200)
     print(var.coef.plot)

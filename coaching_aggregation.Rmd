@@ -193,7 +193,7 @@ coaching.corr.plot <- ggplot(cormat, aes(x=Var1, y=Var2, fill=value)) +
 # for any give var, what is more correlated?
 # Some kind of interactivity, select a row/column to see a list of highly correlated variables?
 # Or a cutoff limit that shows the top 10%?
-filename <- "coaching.corr.matrix.png"
+filename <- "./img_out/coaching.corr.matrix.png"
 print(filename)
 png(filename = filename, width = 12, height = 10, unit = "in", res = 200)
 print(coaching.corr.plot)

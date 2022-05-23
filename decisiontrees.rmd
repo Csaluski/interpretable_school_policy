@@ -16,14 +16,16 @@ library(mlr3tuning)
 csv.data.loc <- "./Data Sources CSV"
 ic.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.computed.combined.csv", sep = "")
 cwis.joined.dt.loc <- paste(csv.data.loc, "/cwis.nces.computed.combined.csv", sep = "")
+cl.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.cl.computed.combined.csv", sep = "")
 
 ic.joined.dt <- as.data.table(read.csv(ic.joined.dt.loc))
 cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
+cl.joined.dt <- as.data.table(read.csv(cl.joined.dt.loc))
 ```
 
 ```{r}
 # these variables are character and variables used in earlier joins so they are not needed
-exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10")
+exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10", "V1")
 ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
 ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", ..exclude.cols)]
 ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
@@ -31,6 +33,10 @@ ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
 ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
 ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
 ic.predict.cfa.dt <- ic.predict.cfa.dt[complete.cases(ic.predict.cfa.dt[, ]), ]
+
+cl.predict.dt <- cl.joined.dt[, !..exclude.cols]
+cl.predict.no.cfa.dt <- cl.joined.dt[, !c("CFA_avg", ..exclude.cols)]
+cl.predict.cfa.dt <- cl.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
 ```
 
 ```{r}
@@ -51,9 +57,16 @@ task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa
 
 task.cfa.regr <- TaskRegr$new(id = "cfa", backend = ic.predict.cfa.dt, target = "CFA_avg")
 
-task.name.vec <- c("etlp", "etlp.no.cfa", "cfa")
+task.cl.regr <- TaskRegr$new(id = "cl", backend = cl.predict.dt, target = "ETLP_avg")
 
-task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr)
+task.cl.no.cfa.regr <- TaskRegr$new(id = "cl.no.cfa", backend = cl.predict.no.cfa.dt, target = "ETLP_avg")
+
+task.cl.cfa.regr <- TaskRegr$new(id = "cl.cfa", backend = cl.predict.cfa.dt, target = "CFA_avg")
+
+
+task.name.vec <- c("etlp", "etlp.no.cfa", "cfa", "cl", "cl.no.cfa", "cl.cfa")
+
+task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr, task.cl.regr, task.cl.no.cfa.regr, task.cl.cfa.regr)
 
 measure <- msr("regr.mse")
 
@@ -100,7 +113,7 @@ err.plot <- ggplot() +
   facet_grid(task_id ~ ., labeller = label_both)
 
 err.plot
-png(filename = "decision.tree.loss.png", width = 6, height = 4, unit = "in", res = 200)
+png(filename = "./img_out/decision.tree.loss.png", width = 6, height = 4, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 ```
@@ -135,7 +148,6 @@ for (task.name in task.name.vec) {
 }
 # convert all the above code into this single block
 ctree.var.dt <- ctree.dt[, {
-  # TODO get 0 counts by using factor with vector of levels, from original tasks
   curr.learner <- learner[[1]]
   res.vars <- ctree_var_extract(curr.learner$model$node, vector())
   as.data.table(table(res.vars))
@@ -150,8 +162,7 @@ for (task.name in task.name.vec) {
       geom_point(data = ctree.var.dt[task_id == task.name], aes(x = times.in.tree, y = res.vars)) +
       facet_grid(occurence.n.folds ~ ., scales = "free", space = "free") 
 
-    filename <- paste(task.name, "count.png", sep = "_")
-    print(filename)
+    filename <- paste("./img_out/", task.name, "count.png", sep = "_")
     png(filename = filename, width = 8, height = 6, unit = "in", res = 200)
     print(var.count.plot)
     dev.off()
@@ -167,7 +178,7 @@ for (task.name in task.name.vec) {
   for (fold in 1:num.folds) {
     curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
 
-    filename <- paste(task.name, fold, "tree.png", sep = ".")
+    filename <- paste("./img_out/", task.name, fold, "tree.png", sep = ".")
     png(filename = filename, width = 20, height = 6, unit = "in", res = 200)
     plot(curr.tree)
     dev.off()

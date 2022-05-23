@@ -146,8 +146,8 @@ for (index in 1:nrow(ic.col.dt)) {
   setnames(ic.dt, ic.col.name, ic.col.desc)
 }
 
-cwis.avg.file <- "Data Sources/Data Research Questions/CWIS_avg_per_domain_per_district.csv.xlsx"
-cwis.avg.dt <- as.data.table(read.xlsx(cwis.avg.file))
+cwis.avg.file <- "Data Sources/Data Research Questions/CWIS_avg_per_domain_per_district_2017_untill_2021_revised_05.20.22.csv"
+cwis.avg.dt <- as.data.table(fread(cwis.avg.file))
 # cwis.avg.dt <- cwis.avg.dt[ic.district.cols, on = .(State.District.ID)]
 
 cwis.district.cols <- cwis.avg.dt[["State.District.ID"]]
@@ -176,6 +176,11 @@ year <-
       time_divide_cwis
     ))
 cwis.avg.dt <- cbind(cwis.avg.dt, year)
+
+# Keep only the latest CWIS survey that was completed each year
+cwis.avg.dt[, keep := seq_along(sort(-session)), by = c("State.District.ID", "year")]
+cwis.avg.dt <- cwis.avg.dt[keep == 1]
+cwis.avg.dt$keep <- NULL
 ```
 
 
@@ -300,6 +305,7 @@ str(unique(ic.cwis.nces.computed.combined.dt[, .(State.District.ID, year)]))
 We also see that we lost 27 rows on this join, however this is expected as we know the IC dataset is smaller.
 
 We may come back to this code
+Coaching aggregation is now performed in `./choaching_aggeregation.rmd`.
 ```{r}
 # interested.coach.cols <- c("State.District.ID", "Date.of.Event/Visit", "Interaction.Type", "Consultants")
 # interested.cwis.cols <- c("State.District.ID", "ETL.AVERAGE")

@@ -7,8 +7,9 @@ author: "Charles Saluski"
 # Note that if caret is used to normalize data then it must be imported before
 # animint2, as it imports ggplot2 and will shadow functions from it.
 library(data.table)
-library(caret)
+# library(caret)
 library(animint2)
+library(ash)
 ```
 
 ```{r} 
@@ -24,7 +25,8 @@ build_correlation_animint <- function(original_dt,
                                       model_output_dt,
                                       id_vars_vec,
                                       exclude_vars_vec = NULL,
-                                      normalize = FALSE) {
+                                      normalize = FALSE,
+                                      heatmap = FALSE) {
 
   # Variables to exclude can be just the id variables, but if there's more
   # then the user will pass them to be excluded.
@@ -54,44 +56,6 @@ build_correlation_animint <- function(original_dt,
   setnames(cormat.display.dt, "Var2", "corr.var")
   setnames(cormat.display.dt, "value", "corr.coef")
 
-  # make a giant long data table of every var1 var2 val1 val2
-  # after checking if any variables should be excluded
-  if (missing(exclude_vars_vec)) {
-  long.data.var <- melt(
-    original_dt,
-    id.vars = id_vars_vec,
-    variable.name = "var",
-    value.name = "var.val"
-  )
-  long.data.corr.var <- melt(
-    original_dt,
-    id.vars = id_vars_vec,
-    variable.name = "corr.var",
-    value.name = "corr.var.val"
-  ) 
-  } else {
-  long.data.var <- melt(
-    original_dt[, !..exclude_vars_vec],
-    id.vars = id_vars_vec,
-    variable.name = "var",
-    value.name = "var.val"
-  )
-  long.data.corr.var <- melt(
-    original_dt[, !..exclude_vars_vec],
-    id.vars = id_vars_vec,
-    variable.name = "corr.var",
-    value.name = "corr.var.val"
-  ) }
-
-  scatter.dt <- long.data.var[
-    long.data.corr.var,
-    on = id_vars_vec,
-    allow.cartesian = TRUE
-  ]
-  # these intermediary data tables might be big, so save a little memory and
-  # get rid of them
-  rm("long.data.var", "long.data.corr.var")
-
   var.names <- unique(cormat.long.full$var)
 
 
@@ -116,6 +80,93 @@ build_correlation_animint <- function(original_dt,
     by = var
   ]
 
+  if (heatmap) {
+    # Every combination of 2 variable columns needs to have a heat map
+    # generated.
+    heatmap.cols <- colnames(original_dt)
+    heatmap.cols <- heatmap.cols[!heatmap.cols %in% no.corr.cols]
+    heatmap.list <- list()
+    for (colx in heatmap.cols) {
+      for (coly in heatmap.cols) {
+        # then melted into a long table of var1, var2, x, y, val
+        # this doesn't work and that's really confusing?
+        current.cols <- c(colx, coly)
+        heatmap.resolution <- 5
+        current.heatmap.mat <- bin2(
+          as.matrix(original_dt[, ..current.cols]), 
+          nbin = c(heatmap.resolution, heatmap.resolution)
+          )$nc
+        long.heatmap <- reshape2::melt(current.heatmap.mat)
+        list.loc <- paste0(colx, coly, sep = ":")
+        print(min(original_dt[[colx]]))
+        print(max(original_dt[[colx]]))
+        xVec <- min(original_dt[[colx]]):max(original_dt[[colx]])
+        yVec <- min(original_dt[[coly]]):max(original_dt[[coly]])
+        x <- approx(xVec, n = heatmap.resolution)$x
+        y <- approx(yVec, n = heatmap.resolution)$x
+        heatmap.list[[list.loc]] <- data.table(
+          x = rep(x, each=heatmap.resolution),
+          y = y,
+          count = long.heatmap$value,
+          var = colx,
+          corr.var = coly
+        )
+      }
+    }
+    heatmap.dt <- do.call(rbind, heatmap.list)
+    View(heatmap.dt)
+    # we can't plot the text label at an arbitrary point because of the changes
+    # in the coordinate systems, so we have to make a table with each location
+    text.plot.dt <- coef.corr.dt[heatmap.dt, on = c("var", "corr.var")]
+    text.plot.dt[, var.x := (min(x) + max(x)) / 2, by=var]
+    text.plot.dt[, corr.y := (min(y) + max(y)) / 2, by=corr.var]
+    text.plot.dt[, corr.x := min(x) , by=var]
+    text.plot.dt[, var.y := min(y), by=corr.var]
+    text.plot.dt <- unique(text.plot.dt[
+      ,
+      c("var", "corr.var", "var.x", "var.y", "corr.x", "corr.y")
+    ])
+    View(text.plot.dt)
+  } else {
+    # make a giant long data table of every var1 var2 val1 val2
+    # after checking if any variables should be excluded
+    if (missing(exclude_vars_vec)) {
+      long.data.var <- melt(
+        original_dt,
+        id.vars = id_vars_vec,
+        variable.name = "var",
+        value.name = "var.val"
+      )
+      long.data.corr.var <- melt(
+        original_dt,
+        id.vars = id_vars_vec,
+        variable.name = "corr.var",
+        value.name = "corr.var.val"
+      )
+    } else {
+      long.data.var <- melt(
+        original_dt[, !..exclude_vars_vec],
+        id.vars = id_vars_vec,
+        variable.name = "var",
+        value.name = "var.val"
+      )
+      long.data.corr.var <- melt(
+        original_dt[, !..exclude_vars_vec],
+        id.vars = id_vars_vec,
+        variable.name = "corr.var",
+        value.name = "corr.var.val"
+      )
+    }
+  scatter.dt <- long.data.var[
+    long.data.corr.var,
+    on = id_vars_vec,
+    allow.cartesian = TRUE
+  ]
+
+  # these intermediary data tables might be big, so save a little memory and
+  # get rid of them
+  rm("long.data.var", "long.data.corr.var")
+
   # we can't plot the text label at an arbitrary point because of the changes
   # in the coordinate systems, so we have to make a table with each location
   text.plot.dt <- coef.corr.dt[scatter.dt, on = c("var", "corr.var")]
@@ -127,6 +178,12 @@ build_correlation_animint <- function(original_dt,
     ,
     c("var", "corr.var", "var.x", "var.y", "corr.x", "corr.y")
   ])
+  }
+
+  # create a mean of each variable for plotting
+  model_mean_dt <- model_output_dt[, mean := mean(norm.coef), by=var]
+  model_mean_dt <- model_mean_dt[var %in% var.names]
+  model_mean_dt <- unique(model_mean_dt[, .(mean, var, count)])
 
   var.coef.plot <- ggplot() +
     geom_segment(
@@ -144,14 +201,11 @@ build_correlation_animint <- function(original_dt,
         yend = corr.var,
         x = -Inf,
         xend = Inf,
-        color = corr.coef
+        color = corr.coef,
+        tooltip = corr.coef
       ),
       size = 10,
       showSelected = "var"
-    ) +
-    geom_point(
-      data = model_output_dt[var %in% var.names],
-      aes(x = norm.coef, y = var)
     ) +
     geom_segment(
       data = select.var.dt,
@@ -160,6 +214,17 @@ build_correlation_animint <- function(original_dt,
       clickSelects = "var",
       size = 10,
       alpha = 0.5
+    ) +
+    geom_point(
+      data = model_output_dt[var %in% var.names],
+      aes(x = norm.coef, y = var, tooltip = norm.coef)
+    ) +
+    geom_point(
+      data = model_mean_dt,
+      aes(x = mean, y = var, tooltip = paste0("mean = ", mean)),
+      color = "blue",
+      size = 5,
+      alpha = 0.5,
     ) +
     scale_color_gradient2(
       low = "blue",
@@ -181,13 +246,13 @@ build_correlation_animint <- function(original_dt,
     # seems like a major bug with animint2
     geom_tile(
       data = coef.corr.dt,
-      aes(x = 1, y = var.order, fill = corr.coef, key = corr.var),
+      aes(x = 1, y = -var.order, fill = corr.coef, key = corr.var, tooltip = corr.coef),
       showSelected = "var",
       clickSelects = "corr.var"
     ) +
     geom_text(
       data = coef.corr.dt,
-      aes(x = 2, y = var.order - 0.3, label = corr.var),
+      aes(x = 2, y = -var.order - 0.3, label = corr.var),
       size = 10,
       showSelected = "var",
       clickSelects = "corr.var",
@@ -216,13 +281,40 @@ build_correlation_animint <- function(original_dt,
     ) +
     theme_animint(height = 400, width = 300)
 
-  var.scatter.plot <- ggplot() +
-    geom_point(
-      data = scatter.dt,
-      aes(x = var.val, y = corr.var.val),
-      showSelected = c("var", "corr.var"),
-      chunk_vars = c("var")
-    ) +
+  var.2d.plot <- ggplot()
+  
+  if (heatmap) {
+    var.2d.plot <- var.2d.plot +
+    # change to geom_rect and see if that fixes the update_axes
+      geom_tile(
+        data = heatmap.dt,
+        aes(x = x, y = y, fill = log(count)),
+        showSelected = c("var", "corr.var"),
+      ) +
+      theme_animint(
+        update_axes = c("x", "y"),
+        height = 400,
+        width = 400
+      )
+  } else {
+    var.2d.plot <- var.2d.plot +
+      geom_jitter(
+        data = scatter.dt,
+        width = 0.1,
+        height = 0.1,
+        alpha = 0.6,
+        aes(x = var.val, y = corr.var.val, tooltip = paste(State.District.ID, year)),
+        clickSelects = "State.District.ID",
+        showSelected = c("var", "corr.var"),
+        chunk_vars = c("var")) +
+      theme_animint(
+        update_axes = c("x", "y"),
+        height = 400,
+        width = 400
+      )
+  } 
+
+  var.2d.plot <- var.2d.plot +
     geom_text(
       data = text.plot.dt,
       aes(label = var, x = var.x, y = var.y),
@@ -240,19 +332,15 @@ build_correlation_animint <- function(original_dt,
       title = "Scatter Plot of Selected Variables",
       x = "Selected main variable",
       y = "Selected secondary variable"
-    ) +
-    theme_animint(
-      update_axes = c("x", "y"),
-      height = 400,
-      width = 400
     )
+
 
   plot.list <- list()
 
   # plot.list$correlationheatmap <- coaching.corr.plot
   plot.list$varcoef <- var.coef.plot
   plot.list$coefvec <- corr.vec.plot
-  plot.list$varscatter <- var.scatter.plot
+  plot.list$varscatter <- var.2d.plot
   plot.list$duration <- list("var" = 1000, "corr.var" = 1000)
 
 
@@ -304,6 +392,8 @@ for (col in colnames(ic.dt)) {
   setnames(ic.dt, col, new_name)
 }
 
+ic.dt <- ic.dt[joined.dt[, .(State.District.ID, year, ETLP_avg)], on=c("State.District.ID", "year")]
+
 glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
 
 glm.coef.dt <- fread(glm.coef.loc)
@@ -320,6 +410,9 @@ glm.coef.sd.dt <- data.table(
 glm.coef.dt <- glm.coef.sd.dt[glm.coef.dt, on=c("var")]
 glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
 glm.coef.dt[, norm.coef := coef * sd]
+# kinda ugly way to add the ETLP_avg to the coefficients plot, so that it shows
+# up in the correlation plots
+glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
 
 # get rid of weird characters in the column names
 for (col in colnames(glm.coef.dt)) {
@@ -340,7 +433,11 @@ ic.exclude.cols <- colnames(ic.dt)[
 ic.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols)
 ic.vis$title <- "Correlation of Integration Checklist Variables with GLM models"
 
+ic.heatmap.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols, heatmap = TRUE)
+
+
 animint2dir(ic.vis, out.dir = "./animint_out/ic", open.browser = FALSE)
+# animint2dir(ic.heatmap.vis, out.dir = "./animint_out/ic_heatmap", open.browser = FALSE)
 # We are using GitHub Pages to host these now instead of Gist, as the Gist files
 # tend to get too large or too numerous.
 # animint2gist(ic.vis)
@@ -355,6 +452,7 @@ id.cols <- c("State.District.ID", "year")
 
 
 glm.coef.dt <- glm.coef.dt[count > 0]
+glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
 
 selected.vars <- unique(glm.coef.dt$var)
 keep.cols <- c(selected.vars, id.cols)
@@ -374,6 +472,37 @@ animint2dir(joined.vis, out.dir = "./animint_out/joined", open.browser = FALSE)
 
 # animint2gist(joined.vis)
 rm("joined.vis")
+```
+
+```{r}
+glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
+
+glm.coef.dt <- fread(glm.coef.loc)
+glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "etlp.no.cfa"]
+selected.vars <- unique(glm.coef.dt$var)
+
+# normalize the coefficients of the models
+joined.sd <- apply(joined.dt[, ..selected.vars], 2, sd)
+glm.coef.sd.dt <- data.table(
+  sd = joined.sd, 
+  var = names(joined.sd)
+)
+
+glm.coef.dt <- glm.coef.sd.dt[glm.coef.dt, on=c("var")]
+glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
+glm.coef.dt[, norm.coef := coef * sd]
+# kinda ugly way to add the ETLP_avg to the coefficients plot, so that it shows
+# up in the correlation plots
+glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
+
+# get rid of weird characters in the column names
+for (col in colnames(glm.coef.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
+  setnames(glm.coef.dt, col, new_name)
+}
+
+
+
 ```
 
 
@@ -403,6 +532,10 @@ glm.coef.sd.dt <- data.table(
 glm.coef.dt <- glm.coef.sd.dt[glm.coef.dt, on=c("var")]
 glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
 glm.coef.dt[, norm.coef := coef * sd]
+glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
+
+coaching.agg.dt <- coaching.agg.dt[joined.dt[, .(State.District.ID, year, ETLP_avg)], on=c("State.District.ID", "year")]
+coaching.agg.dt <- coaching.agg.dt[complete.cases(coaching.agg.dt)]
 
 coaching.vis <- build_correlation_animint(coaching.agg.dt, glm.coef.dt, id.cols)
 coaching.vis$title <- "Correlation of Coaching Variables with GLM models"
