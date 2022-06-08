@@ -1,0 +1,180 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, Classification Decision Trees"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+The ETLP performance of schools can also be viewed as a classification problem,
+where the categories are the binary condition of having a score of 4 or above, 
+which is the goal that schools are trying to achieve.
+
+```{r}
+library(glmnet)
+library(mlr3)
+library(mlr3learners)
+library(data.table)
+library(mlr3extralearners)
+library(stringr)
+
+csv.data.loc <- "./Data Sources CSV"
+ic.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.computed.combined.csv", sep = "")
+cl.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.cl.computed.combined.csv", sep = "")
+
+ic.joined.dt <- fread(ic.joined.dt.loc)
+cl.joined.dt <- fread(cl.joined.dt.loc)
+```
+
+```{r}
+# these variables are character and variables used in earlier joins so they are not needed
+exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "NCES.District.Name.(to.check)", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10", "V1")
+
+ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
+ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
+
+cl.predict.dt <- cl.joined.dt[, !..exclude.cols]
+
+etlp.goal <- 4
+
+for (col in colnames(ic.predict.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:]._]", ".")
+  setnames(ic.predict.dt, col, new_name)
+}
+
+for (col in colnames(cl.predict.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:]._]", ".")
+  setnames(cl.predict.dt, col, new_name)
+}
+
+ic.predict.dt[, etlp.gte.goal := factor(ETLP_avg >= etlp.goal, labels = c("LT Goal", "GTE Goal"))]
+cl.predict.dt[, etlp.gte.goal := factor(ETLP_avg >= etlp.goal, labels = c("LT Goal", "GTE Goal"))]
+
+ic.predict.dt$ETLP_avg <- NULL
+cl.predict.dt$ETLP_avg <- NULL
+
+ic.predict.no.avg.dt <- ic.predict.dt[, !c("CFA_avg", "PD_avg", "DBDM_avg", "Leadership_avg")]
+cl.predict.no.avg.dt <- cl.predict.dt[, !c("CFA_avg", "PD_avg", "DBDM_avg", "Leadership_avg")]
+```
+
+```{r}
+set.seed(123)
+num.folds <- 10
+
+task.ic.classif <- TaskClassif$new(
+  id = "task.ic.classif",
+  backend = ic.predict.dt,
+  target = "etlp.gte.goal",
+  positive = "GTE Goal")
+
+task.coaching.classif <- TaskClassif$new(
+  id = "task.coaching.classif",
+  backend = cl.predict.dt,
+  target = "etlp.gte.goal",
+  positive = "GTE Goal")
+
+task.ic.no.avg.classif <- TaskClassif$new(
+  id = "task.ic.no.avg.classif",
+  backend = ic.predict.no.avg.dt,
+  target = "etlp.gte.goal",
+  positive = "GTE Goal")
+
+task.coaching.no.avg.classif <- TaskClassif$new(
+  id = "task.coaching.no.avg.classif",
+  backend = cl.predict.no.avg.dt,
+  target = "etlp.gte.goal",
+  positive = "GTE Goal")
+
+
+task.name.vec <- c("task.ic.classif", "task.coaching.classif", "task.ic.no.avg.classif", "task.coaching.no.avg.classif")
+task.list <- list(task.ic.classif, task.coaching.classif, task.ic.no.avg.classif, task.coaching.no.avg.classif)
+
+
+learner.name.vec <- c("classif.featureless", "classif.cforest")
+learner.list <- list()
+for (name in learner.name.vec) {
+  learner.list[[name]] <- lrn(name, predict_type = "prob")
+}
+learner.list[["classif.ctree"]] <- lrn("classif.ctree", predict_type = "prob", mincriterion = 0.9)
+
+measure <- msr("classif.auc")
+resampling <- rsmp("cv", folds = num.folds)
+
+benchmark.obj <- benchmark_grid(
+  task = task.list,
+  learners = learner.list,
+  resamplings = list(resampling)
+)
+
+benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
+result.dt <- benchmark.res$score(measure)
+```
+
+```{r}
+library(ggplot2)
+method.levels <- result.dt[, .(mean = mean(classif.auc)), by = learner_id][order(mean), learner_id]
+result.dt[, Method := factor(learner_id, method.levels)]
+err.plot <- ggplot() +
+  geom_point(data = result.dt, aes(x = classif.auc, y = Method)) +
+  facet_grid(task_id ~ ., labeller = label_both)
+
+err.plot
+png(filename = "./img_out/decision.binary.tree.auc.png", width = 6, height = 4, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+```
+
+
+```{r}
+
+ctree_var_extract <- function(ctree, var.acc.v) {
+  if (!is.null(ctree)) {
+    var.acc.v <- c(var.acc.v, attributes(ctree$info$p.value)$names)
+    for (i in 1:length(ctree$kids)) {
+      var.acc.v <- ctree_var_extract(ctree$kids[[i]], var.acc.v)
+    }
+  }
+  var.acc.v
+}
+
+ctree.dt <- result.dt[learner_id == "classif.ctree"]
+
+ctree.var.list <- list()
+for (task.name in task.name.vec) {
+  curr.learners <- ctree.dt[task.name == task_id]$learner
+
+  for (cv.id in 1:num.folds) {
+    curr.vars <- ctree_var_extract(curr.learners[[cv.id]]$model$node, vector())
+    var.count.dt <- as.data.table(table(curr.vars))
+    var.count.dt[, times.in.tree := N]
+    ctree.var.list[[paste(task.name, cv.id)]] <- data.table(
+      task_id = task.name,
+      var.count.dt,
+      cv.id
+    )
+  }
+}
+# convert all the above code into this single block
+ctree.var.dt <- ctree.dt[, {
+  curr.learner <- learner[[1]]
+  res.vars <- ctree_var_extract(curr.learner$model$node, vector())
+  as.data.table(table(res.vars))
+}, by=.(iteration, task_id)]
+ctree.var.dt[, times.in.tree := N]
+ctree.var.dt[, occurence.n.folds := sum(times.in.tree != 0), by=.(res.vars, task_id)]
+```
+
+
+```{r}
+ctree.model.list <- list()
+for (task.name in task.name.vec) {
+  curr.dt <- ctree.dt[task_id == task.name]
+  for (fold in 1:num.folds) {
+    curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
+
+    filename <- paste("./img_out/", paste(task.name, fold, "tree.png", sep = "."), sep = "")
+    png(filename = filename, width = 20, height = 6, unit = "in", res = 200)
+    plot(curr.tree)
+    dev.off()
+  }
+}
+```

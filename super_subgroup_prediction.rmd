@@ -1,0 +1,384 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, By Years in Program"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(mlr3)
+library(mlr3learners)
+library(mlr3extralearners)
+library(mlr3tuning)
+```
+
+```{r}
+district.map.dt <- fread("Data Sources CSV/building_map_data/District MAP content area and grade all disag.csv")
+
+district.map.dt <- district.map.dt%>%
+        mutate(PROFICIENT_PCT=as.numeric(PROFICIENT_PCT))%>%
+        mutate(BELOW_BASIC_PCT=as.numeric(BELOW_BASIC_PCT))%>%
+        mutate(ADVANCED_PCT=as.numeric(ADVANCED_PCT))%>%
+        mutate(PCT_PROFICIENT_AND_ADVANCED=PROFICIENT_PCT+ADVANCED_PCT)%>%
+        select(YEAR:GRADE_LEVEL,BELOW_BASIC_PCT:PCT_PROFICIENT_AND_ADVANCED)
+
+district.map.dt <- district.map.dt[GRADE_LEVEL=='03'&CONTENT_AREA=='Eng. Language Arts' & TYPE %in% c("Total", "IEP_student")]
+
+district.map.total <- district.map.dt[TYPE=="Total", .(YEAR, COUNTY_DISTRICT, below.basic.pct.total = BELOW_BASIC_PCT, prof.pct.total = PROFICIENT_PCT, adv.pct.total = ADVANCED_PCT, prof.and.adv.pct.total = PCT_PROFICIENT_AND_ADVANCED)]
+
+district.map.iep <- district.map.dt[TYPE=="IEP_student", .(YEAR, COUNTY_DISTRICT, below.basic.pct.iep = BELOW_BASIC_PCT, prof.pct.iep = PROFICIENT_PCT, adv.pct.iep = ADVANCED_PCT, prof.and.adv.pct.iep = PCT_PROFICIENT_AND_ADVANCED)]
+
+district.map.combined <- district.map.total[district.map.iep, on = c("YEAR", "COUNTY_DISTRICT")]
+district.map.combined <- district.map.combined[complete.cases(district.map.combined)]
+
+district.map.combined[, prof.and.adv.pct.gap := prof.and.adv.pct.total - prof.and.adv.pct.iep]
+
+# In this table the year is when the MAP was taken, not the start of the
+# school year like in our other tables, so we make them the same
+district.map.combined[, year := YEAR - 1]
+district.map.combined$YEAR <- NULL
+```
+
+```{r}
+full.dt <- fread("./Data Sources CSV/ic.cwis.nces.cl.computed.combined.csv")
+full.dt$V1 <- NULL
+full.dt$V1 <- NULL
+
+for (col in colnames(full.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:]._]", ".")
+  setnames(full.dt, col, new_name)
+}
+
+full.dt[, COUNTY_DISTRICT := as.integer(str_extract(State.District.ID, "\\d+"))]
+full.dt <- full.dt[district.map.combined, on = c("COUNTY_DISTRICT", "year")]
+# full.dt <- full.dt[iep.dt, on = c("State.District.ID", "year")]
+full.dt <- full.dt[complete.cases(full.dt)]
+```
+
+```{r}
+
+full.dt[, year.in.program := (year - min(year)) + 1, by = "State.District.ID"]
+full.dt[, cohort := paste(year, year.in.program, sep=".")]
+full.dt <- full.dt[complete.cases(full.dt[, ])]
+
+# find change between 1st and 2nd year and 2nd and 3rd year
+# self join on year = year - 1, then subtract each 1st row from the 2nd
+yoy.dt <- merge(
+  full.dt, full.dt,
+  by = "State.District.ID",
+  allow.cartesian = TRUE, suffixes = c(".before", ".after")
+  )[,
+    year.diff :=  year.in.program.after - year.in.program.before
+    ][year.diff > 0]
+
+diff.cols <- names(full.dt)[as.vector(sapply(full.dt, class)) %in% c("numeric", "num", "int")]
+
+for (col in diff.cols) {
+  diff.col.name <- paste(col, "diff", sep=".")
+  col.x.name <- c(paste(col, "before", sep="."))
+  col.y.name <- c(paste(col, "after", sep="."))
+  # I can't get this to work just using the variable names, so we're using get
+  yoy.dt[[diff.col.name]] <- yoy.dt[, get(col.y.name) - get(col.x.name)]
+}
+
+```
+
+
+```{r}
+yoy.exclude.char.cols <- names(yoy.dt)[as.vector(sapply(yoy.dt, class)) %in% c("character")]
+
+full.exclude.char.cols <- names(full.dt)[as.vector(sapply(full.dt, class)) %in% c("character")]
+
+exclude.cols <- c(yoy.exclude.char.cols, full.exclude.char.cols, "X", "SUMMARY_LEVEL", "DISTRICT_NAME", "CATEGORY", "TYPE", "SCHOOL_NAME", "CONTENT_AREA", "prof.and.adv.pct.total", "prof.pct.total", "prof.pct.iep", "adv.pct.total", "adv.pct.iep",  "cohort"
+# "below.basic.pct.total", "below.basic.pct.iep", "prof.and.adv.pct.gap", "year"
+)
+
+exclude.avg.cols <- c("CFA_avg", "PD_avg", "DBDM_avg", "Leadership_avg")
+
+exclude.col.set.list <- list("standard" = exclude.cols, "avgs" = c(exclude.cols, exclude.avg.cols))
+
+task.list <- list()
+
+for (select.year in unique(full.dt$year.in.program)) {
+  current.cohort <- full.dt[full.dt$year.in.program == select.year, ]
+  for (exclude.col.set in names(exclude.col.set.list)) {
+    exclude.set.vec <- exclude.col.set.list[[exclude.col.set]]
+    current.set.dt <- current.cohort[, !..exclude.set.vec]
+    id <- paste("after", select.year, "year excl",  exclude.col.set, "gap", sep=" ")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt,
+      target = "prof.and.adv.pct.gap"
+    )
+    id <- paste("after", select.year, "year excl",  exclude.col.set, "iep", sep=" ")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap")],
+      target = "prof.and.adv.pct.iep"
+    )
+  }
+}
+
+for (select.year in unique(full.dt$year)) {
+  current.cohort <- full.dt[full.dt$year == select.year, ]
+  for (exclude.col.set in names(exclude.col.set.list)) {
+    exclude.set.vec <- exclude.col.set.list[[exclude.col.set]]
+    current.set.dt <- current.cohort[, !..exclude.set.vec]
+    id <- paste("year", select.year, "excl",  exclude.col.set, "gap", sep=" ")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt,
+      target = "prof.and.adv.pct.gap"
+    )
+    id <- paste("year", select.year, "excl",  exclude.col.set, "iep", sep=" ")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap")],
+      target = "prof.and.adv.pct.iep"
+    )
+  }
+}
+
+# Do the full regression models for every year in the program
+for (select_year in unique(yoy.dt$year.in.program.before)) {
+  current.cohort <- yoy.dt[yoy.dt$year.in.program.before == select_year, !c("cohort")]
+  for (exclude.set in names(exclude.col.set.list)) {
+    exclude.set.vec <- exclude.col.set.list[[exclude.set]]
+    current.set.dt <- current.cohort[, !..exclude.set.vec]
+    # id <- paste("cohort yr", select_year, "excl", exclude.set, "ETLP before")
+    # task.list[[id]] <- TaskRegr$new(
+    #   id = id,
+    #   backend = current.set.dt,
+    #   target = "ETLP_avg.before"
+    #   )
+    id <- paste("cohort yr", select_year, "excl", exclude.set, "ELA before")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap.after")],
+      target = "prof.and.adv.pct.gap.before"
+      )
+    # id <- paste("cohort yr", select_year, "excl", exclude.set, "ETLP after")
+    # task.list[[id]] <- TaskRegr$new(
+    #   id = id,
+    #   backend = current.set.dt,
+    #   target = "ETLP_avg.after"
+    #   )
+    id <- paste("cohort yr", select_year, "excl", exclude.set, "ELA after")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap.before")],
+      target = "prof.and.adv.pct.gap.after"
+      )
+    # id <- paste("cohort yr", select_year, "excl", exclude.set, "ETLP diff")
+    # task.list[[id]] <- TaskRegr$new(
+    #   id = id,
+    #   backend = current.set.dt[, !c("ETLP_avg.before", "ETLP_avg.after")],
+    #   target = "ETLP_avg.diff"
+    #   )
+    id <- paste("cohort yr", select_year, "excl", exclude.set, "ELA diff")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap.before", "prof.and.adv.pct.gap.after")],
+      target = "prof.and.adv.pct.gap.diff"
+      )
+  }
+}
+
+# Do the full regression model for every year of the MAP
+for (select_year in unique(yoy.dt$year.before)) {
+  current.year <- yoy.dt[yoy.dt$year.before == select_year, !c("cohort")]
+  for (exclude.set in names(exclude.col.set.list)) {
+    exclude.set.vec <- exclude.col.set.list[[exclude.set]]
+    current.set.dt <- current.year[, !..exclude.set.vec]
+    # id <- paste("year", select_year, "excl", exclude.set, "ETLP before")
+    # task.list[[id]] <- TaskRegr$new(
+    #   id = id,
+    #   backend = current.set.dt,
+    #   target = "ETLP_avg.before"
+    #   )
+    id <- paste("year", select_year, "excl", exclude.set, "ELA before")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap.after")],
+      target = "prof.and.adv.pct.gap.before"
+      )
+    # id <- paste("year", select_year, "excl", exclude.set, "ETLP after")
+    # task.list[[id]] <- TaskRegr$new(
+    #   id = id,
+    #   backend = current.set.dt,
+    #   target = "ETLP_avg.after"
+    #   )
+    id <- paste("year", select_year, "excl", exclude.set, "ELA after")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap.before")],
+      target = "prof.and.adv.pct.gap.after"
+      )
+    # id <- paste("year", select_year, "excl", exclude.set, "ETLP diff")
+    # task.list[[id]] <- TaskRegr$new(
+    #   id = id,
+    #   backend = current.set.dt[, !c("ETLP_avg.before", "ETLP_avg.after")],
+    #   target = "ETLP_avg.diff"
+    #   )
+    id <- paste("year", select_year, "excl", exclude.set, "ELA diff")
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt[, !c("prof.and.adv.pct.gap.before", "prof.and.adv.pct.gap.after")],
+      target = "prof.and.adv.pct.gap.diff"
+      )
+  }
+}
+
+task.name.vec <- names(task.list)
+```
+
+```{r}
+learner.list <- list()
+learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
+learner.list[["regr.ctree"]] <- LearnerRegrCTree$new()
+learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
+# Random forests and tuned ctrees are not providing any benefit over a default
+# ctree, so we don't bother with them.
+# learner.list[["regr.cforest"]] <- LearnerRegrCForest$new()
+
+# learner.list[["regr.at.ctree"]] <- mlr3tuning::AutoTuner$new(
+#     learner = mlr3extralearners::lrn("regr.ctree"),
+#     resampling = mlr3::rsmp("cv", folds = 3),
+#     measure = msr("regr.mse"),
+#     search_space = paradox::ps(
+#       mincriterion = paradox::p_dbl(lower = 0, upper = 1)
+#     ),
+#     terminator = mlr3tuning::trm("none"),
+#     tuner = mlr3tuning::tnr("grid_search", resolution = 11),
+#     store_tuning_instance = TRUE
+#   )
+
+learner.list[["regr.at.xgboost"]] <- AutoTuner$new(
+  learner = lrn("regr.xgboost"),
+  resampling = rsmp("cv", folds = 3),
+  measure = msr("regr.mse"),
+  search_space = ps(
+    eta = p_dbl(lower = 0, upper = 1),
+    nrounds = p_int(lower = 1, upper = 16)
+  ),
+  terminator = trm("none"),
+  tuner = tnr("grid_search", resolution = 5),
+  store_tuning_instance = TRUE
+)
+
+learner.name.vec <- names(learner.list)
+
+num.folds <- 10
+resampling <- rsmp("cv", folds = num.folds)
+
+benchmark.obj <- benchmark_grid(
+  task = task.list,
+  learners = learner.list,
+  resamplings = list(resampling)
+)
+benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
+measure <- msr("regr.mse")
+result.dt <- benchmark.res$score(measure)
+```
+
+```{r}
+library(ggplot2)
+method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-mean), learner_id]
+result.dt[, Method := factor(learner_id, method.levels)]
+result.dt[, mean := mean(regr.mse), by = c("learner_id", "task_id")]
+
+plot.dt <- result.dt
+err.plot <- ggplot() +
+  geom_point(data = plot.dt, aes(x = mean, y = Method), size = 2, color = "red") +
+  geom_point(data = plot.dt, aes(x = regr.mse, y = Method)) +
+  facet_grid(task_id ~ .)
+
+png(filename = "./img_out/iep_ela.loss.mse.png", width = 6, height = 60, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+
+```
+
+
+```{r}
+result.dt[, baseline := .SD[learner_id == "regr.featureless", regr.mse], by=c("task_id", "iteration")]
+result.dt[, baseline.mean := mean(baseline), by=c("task_id", "learner_id")]
+result.dt[, vs.baseline := baseline.mean - regr.mse ]
+result.dt[, mean.vs.baseline := mean(vs.baseline), by=c("task_id", "learner_id")]
+
+improved.ctrees <- unique(result.dt[mean.vs.baseline > 0.25*baseline.mean & learner_id == "regr.ctree"]$task_id)
+
+
+for (task.name in improved.ctrees) {
+  curr.dt <- result.dt[task_id == task.name & learner_id == "regr.ctree"]
+  path <- paste("./img_out/iep_analysis/trees/", task.name, sep="")
+  dir.create(path, recursive = TRUE)
+  for (fold in 1:num.folds) {
+    curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
+
+    filename <- paste(task.name, fold, "tree.png", sep = "_")
+    dest <- paste(path, filename, sep = "/")
+    png(filename = dest, width = 20, height = 6, unit = "in", res = 200)
+    plot(curr.tree)
+    dev.off()
+  }
+}
+
+```
+
+```{r}
+
+# we want a dt with each model's coefficients
+# then count and display which coefficients are important
+cv.glm.dt <- result.dt[learner_id == "regr.cv_glmnet"]
+glm.method.v <- c("lambda.min", "lambda.1se")
+glm.coef.list <- list()
+for (task.name in task.name.vec) {
+  curr.dt <- cv.glm.dt[task_id == task.name]
+  for (method in glm.method.v) {
+    for (fold in 1:num.folds) {
+      curr.coef.mat <- as.matrix(
+        coef(curr.dt[iteration == fold]$learner[[1]]$model, s = method)[-1, ]
+      )
+      glm.coef.list[[paste(method, task.name, fold)]] <- data.table(
+        method,
+        var = rownames(curr.coef.mat),
+        coef = as.numeric(curr.coef.mat),
+        task_id = task.name
+      )
+    }
+  }
+}
+
+
+# this dt has columns of coefs of each var and a column with the method
+glm.coef.dt <- do.call(rbind, glm.coef.list)
+
+# dt with var method coef
+# make count
+glm.coef.dt[, count := sum(coef != 0), by = .(method, task_id, var)]
+
+
+for (method.select in glm.method.v) {
+  for (task.name in task.name.vec) {
+    var.coef.plot <- ggplot() +
+      geom_point(data = glm.coef.dt[method.select == method & task_id == task.name & count > 0], aes(x = coef, y = var)) +
+      facet_grid(count ~ ., scales = "free", space = "free") +
+      ggtitle(paste("coefficients of model ", method.select, " in task ", task.name)) 
+    # scale_y_continuous(breaks=1:num.folds)
+    dest <- paste("./img_out/iep full ", method.select, "/", sep = "")
+    if (!dir.exists(dest)) {
+      dir.create(dest)
+    }
+    filename <- paste(dest, task.name, ".png", sep = "")
+    print(filename)
+    png(filename = filename, width = 8, height = 8, unit = "in", res = 200)
+    print(var.coef.plot)
+    dev.off()
+  }
+}
+```

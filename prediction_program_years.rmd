@@ -1,0 +1,200 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, By Years in Program"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+library(purrr)
+```
+
+
+```{r}
+full.dt <- fread("./Data Sources CSV/ic.cwis.nces.cl.computed.combined.csv")
+full.dt$V1 <- NULL
+full.dt$V1 <- NULL
+
+
+for (col in colnames(full.dt)) {
+  new_name <- str_replace_all(col, "[^[:alnum:]._]", ".")
+  setnames(full.dt, col, new_name)
+}
+
+full.dt[, year.in.program := (year - min(year)) + 1, by = "State.District.ID"]
+full.dt[, cohort := paste(year, year.in.program, sep=".")]
+full.dt <- full.dt[complete.cases(full.dt[, ])]
+
+# find change between 1st and 2nd year and 2nd and 3rd year
+# self join on year = year - 1, then subtract each 1st row from the 2nd
+yoy.dt <- merge(
+  full.dt, full.dt,
+  by = "State.District.ID",
+  allow.cartesian = TRUE, suffixes = c(".before", ".after")
+  )[
+    year.in.program.before == year.in.program.after - 1
+    ]
+
+diff.cols <- names(full.dt)[as.vector(sapply(full.dt, class)) %in% c("numeric", "num", "int")]
+
+for (col in diff.cols) {
+  diff.col.name <- paste(col, "diff", sep=".")
+  col.x.name <- c(paste(col, "before", sep="."))
+  col.y.name <- c(paste(col, "after", sep="."))
+  # I can't get this to work just using the variable names, so we're using get
+  yoy.dt[[diff.col.name]] <- yoy.dt[, get(col.y.name) - get(col.x.name)]
+}
+```
+
+```{r}
+library(glmnet)
+library(mlr3)
+library(mlr3learners)
+library(mlr3extralearners)
+
+exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10", "V1", "cohort", "ETLP_avg.before", "ETLP_avg.after")
+
+exclude.avg.cols <- c("CFA_avg", "PD_avg", "DBDM_avg", "Leadership_avg")
+
+exclude.col.set.list <- list("none" = exclude.cols, "avgs" = c(exclude.cols, exclude.avg.cols))
+
+task.list <- list()
+for (select_year in unique(full.dt$year.in.program)) {
+  current.cohort <- full.dt[full.dt$year.in.program == select_year, !c("cohort")]
+  for (exclude.set in names(exclude.col.set.list)) {
+    exclude.set.vec <- exclude.col.set.list[[exclude.set]]
+    current.set.dt <- current.cohort[, !..exclude.set.vec]
+    id <- paste("year", select_year, "excl", exclude.set)
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt,
+      target = "ETLP_avg"
+      )
+  }
+}
+
+yoy.exclude.col.list <- c(exclude.col.set.list)
+for (set in names(yoy.exclude.col.list)) {
+  exclude.set.vec <- yoy.exclude.col.list[[set]]
+  for (exclude.col in exclude.set.vec) {
+    exclude.x <- paste(exclude.col, "before", sep=".")
+    exclude.y <- paste(exclude.col, "after", sep=".")
+    yoy.exclude.col.list[[set]] <- c(yoy.exclude.col.list[[set]], exclude.x, exclude.y)
+  }
+}
+
+yoy.exclude.col.list[["avg diffs"]] <- c(exclude.avg.cols, exclude.cols)
+for (col in exclude.avg.cols) {
+  yoy.exclude.col.list[["avg diffs"]] <- c(
+    yoy.exclude.col.list[["avg diffs"]],
+    paste(col, "diff", sep=".")
+  )
+}
+yoy.exclude.col.list[["avg diffs"]] <- c(
+  yoy.exclude.col.list[["avg diffs"]], 
+  yoy.exclude.col.list[["none"]]
+)
+
+for (year in unique(yoy.dt$year.in.program.after)) {
+  current.cohort <- yoy.dt[yoy.dt$year.in.program.after == year, !c("cohort", "year.in.program.diff")]
+  for (exclude.set in names(yoy.exclude.col.list)) {
+    exclude.set.vec <- yoy.exclude.col.list[[exclude.set]]
+    current.set.dt <- current.cohort[, !..exclude.set.vec]
+    id <- paste("year", year, "diff, excl", exclude.set)
+    task.list[[id]] <- TaskRegr$new(
+      id = id,
+      backend = current.set.dt,
+      target = "ETLP_avg.diff"
+      )
+  }
+}
+
+for (exclude.set in names(exclude.col.set.list)) {
+  exclude.set.vec <- exclude.col.set.list[[exclude.set]]
+  current.set.dt <- full.dt[, !..exclude.set.vec]
+  current.set.dt <- current.set.dt[, !c("cohort")]
+  id <- paste("all years", "excl", exclude.set)
+  task.list[[id]] <- TaskRegr$new(
+    id = id,
+    backend = current.set.dt,
+    target = "ETLP_avg"
+    )
+}
+
+task.name.vec <- names(task.list)
+```
+
+```{r}
+learner.list <- list()
+learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
+learner.list[["regr.ctree"]] <- LearnerRegrCTree$new()
+learner.list[["regr.at.ctree"]] <- mlr3tuning::AutoTuner$new(
+    learner = mlr3extralearners::lrn("regr.ctree"),
+    resampling = mlr3::rsmp("cv", folds = 3),
+    measure = msr("regr.mse"),
+    search_space = paradox::ps(
+      mincriterion = paradox::p_dbl(lower = 0, upper = 1)
+    ),
+    terminator = mlr3tuning::trm("none"),
+    tuner = mlr3tuning::tnr("grid_search", resolution = 21),
+    store_tuning_instance = TRUE
+  )
+learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
+
+learner.name.vec <- names(learner.list)
+
+num.folds <- 10
+resampling <- rsmp("cv", folds = num.folds)
+
+benchmark.obj <- benchmark_grid(
+  task = task.list,
+  learners = learner.list,
+  resamplings = list(resampling)
+)
+benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
+measure <- msr("regr.mse")
+result.dt <- benchmark.res$score(measure)
+```
+
+```{r}
+library(ggplot2)
+method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-mean), learner_id]
+result.dt[, Method := factor(learner_id, method.levels)]
+result.dt[, mean := mean(regr.mse), by = c("learner_id", "task_id")]
+err.plot <- ggplot() +
+  geom_point(data = result.dt, aes(x = mean, y = Method), size = 2, color = "red") +
+  geom_point(data = result.dt, aes(x = regr.mse, y = Method)) +
+  facet_grid(task_id ~ .)
+
+err.plot
+png(filename = "./img_out/cohort.loss.mse.png", width = 6, height = 20, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+```
+
+```{r}
+ctree.dt <- result.dt[learner_id == "regr.ctree" | learner_id == "regr.ctree.tuned"]
+
+for (learner.id in unique(ctree.dt$learner_id)) {
+  learner.dt <- ctree.dt[learner_id == learner.id]
+for (task.name in unique(ctree.dt$task_id)) {
+  curr.dt <- learner.dt[task_id == task.name]
+  dir.create(paste("./img_out/", learner.id, task.name, sep=""))
+  for (fold in 1:num.folds) {
+    curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
+    # this isn't the model object I want!
+    if (learner.id == "regr.ctree.tuned") {
+      curr.tree <- curr.tree$learner
+    }
+
+    filename <- paste(task.name, "fold", fold, "tree.png", sep = "_")
+    dest <- paste("./img_out/", learner.id, task.name, "/", filename , sep = "")
+    png(filename = dest, width = 20, height = 6, unit = "in", res = 200)
+    plot(curr.tree)
+    dev.off()
+  }}
+}
+```
