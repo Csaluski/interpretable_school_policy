@@ -89,38 +89,35 @@ combine_nces_files <- function(file.vec, base.location) {
   }
   temp.dt.list
 }
+
 nces.yearly.dt.list <- combine_nces_files(nces.file.vec, nces.base.location)
 nces.yearly.dt <- do.call(rbind, nces.yearly.dt.list)
 setnames(nces.yearly.dt, "State School ID [Public School]", "State.District.ID")
+setnames(nces.yearly.dt, "School ID - NCES Assigned [Public School] Latest available year", "NCES.School.ID")
 
-```
+nces.dt <- data.table(read.xlsx("Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"))[, .(NCES.School.ID, get("Locale*"))]
+setnames(nces.dt, "V2", "Locale")
 
-Read NCES data 
-```{r}
-nces.file <- "Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
-nces.dt <- as.data.table(read.xlsx(nces.file))
+nces.yearly.dt <- nces.yearly.dt[nces.dt, on="NCES.School.ID"]
 
-# remove asterisks in column names, they cause issues with code
+setnames(
+  nces.yearly.dt,
+  old = c("Free Lunch Eligible [Public School]", "Reduced-price Lunch Eligible Students [Public School]", "Total Students, All Grades (Includes AE) [Public School]"),
+  new = c("Free.Lunch.Eligible", "Reduced.Lunch.Eligible", "Total.Students")
+)
 
-# find columns with stars in name
-nces.col.names <- names(nces.dt)
-findStar <- function(curr) {
-  grepl("\\*", curr)
-}
+nces.yearly.dt[, Free.Reduced.Lunch.Rate := (as.numeric(get("Free and Reduced Lunch Students [Public School]"))) / as.numeric(Total.Students)]
+nces.yearly.dt[is.na(Free.Reduced.Lunch.Rate), Free.Reduced.Lunch.Rate := 0]
+nces.yearly.dt[Free.Reduced.Lunch.Rate == Inf, Free.Reduced.Lunch.Rate := 100]
 
-nces.replace.cols <- map(nces.col.names, findStar)
+no.rename.cols <- c("State.District.ID", "year")
 
-# loop across them, setting the column name to the column name without the stars
-for (i in 1:length(nces.replace.cols)) {
-  if (nces.replace.cols[[i]] == TRUE) {
-    old.name <- nces.col.names[i]
-    new.name <- gsub("\\*", "", old.name)
-    setnames(nces.dt, old.name, new.name)
+for (col in names(nces.yearly.dt)) {
+  if (!col %in% no.rename.cols) {
+    prefix.name <- paste("NCES", col, sep="_")
+    setnames(nces.yearly.dt, col, prefix.name)
   }
 }
-
-# remove NCES columns that have no data, have locale code of "N"
-nces.dt <- nces.dt[Locale != "N"]
 ```
 
 Load implementation data from Melvin's work, RQ_IC file aggregates CWIS survey results (implementation checklist)
@@ -138,6 +135,7 @@ setnames(ic.dt, "District.Code", "State.District.ID")
 # set the columns to the correct names
 ic.col.file <- "./Data Sources/DCI Data/Implementation Checklist/Cross_Walk.xlsx"
 ic.col.dt <- as.data.table(read.xlsx(ic.col.file, colNames = FALSE, cols=2:3))
+
 setnames(ic.col.dt, colnames(ic.col.dt), c("name", "description"))
 
 for (index in 1:nrow(ic.col.dt)) {
@@ -146,13 +144,18 @@ for (index in 1:nrow(ic.col.dt)) {
   setnames(ic.dt, ic.col.name, ic.col.desc)
 }
 
+for (col in names(ic.dt)) {
+  if (!col %in% no.rename.cols) {
+    prefix.name <- paste("IC", col, sep="_")
+    setnames(ic.dt, col, prefix.name)
+  }
+}
+
 cwis.avg.file <- "Data Sources/Data Research Questions/CWIS_avg_per_domain_per_district_2017_untill_2021_revised_05.20.22.csv"
 cwis.avg.dt <- as.data.table(fread(cwis.avg.file))
 # cwis.avg.dt <- cwis.avg.dt[ic.district.cols, on = .(State.District.ID)]
 
 cwis.district.cols <- cwis.avg.dt[["State.District.ID"]]
-
-
 
 time_divide_cwis <- function(val) {
   time.section <- 0
@@ -170,17 +173,23 @@ time_divide_cwis <- function(val) {
   time.section
 }
 cwis.avg.dt <- cwis.avg.dt[complete.cases(cwis.avg.dt[, ])]
-year <-
-    unlist(lapply(
-      cwis.avg.dt[["session"]],
-      time_divide_cwis
-    ))
-cwis.avg.dt <- cbind(cwis.avg.dt, year)
+cwis.avg.dt <- data.table(
+  cwis.avg.dt,
+  year = sapply(cwis.avg.dt$session, time_divide_cwis)
+)
 
 # Keep only the latest CWIS survey that was completed each year
 cwis.avg.dt[, keep := seq_along(sort(-session)), by = c("State.District.ID", "year")]
 cwis.avg.dt <- cwis.avg.dt[keep == 1]
 cwis.avg.dt$keep <- NULL
+
+
+for (col in names(cwis.avg.dt)) {
+  if (!col %in% no.rename.cols) {
+    prefix.name <- paste("CWIS", col, sep="_")
+    setnames(cwis.avg.dt, col, prefix.name)
+  }
+}
 ```
 
 
@@ -188,41 +197,48 @@ cwis.avg.dt$keep <- NULL
 ```{r}
 nces.computed.cols <- list()
 
-nces.locale.categories <- unique(nces.dt[["Locale"]])
-
 # we will probably want this wide data
 # By observation, there is a single locale per district ID,
 # so we can not use one-hot encoding for our ML models.
 # We may want to see if this can be broken down to a boolean variable,
 # city vs rural
 nces.computed.cols[["locale.cols"]] <- dcast(
-  nces.dt,
-  State.District.ID ~ Locale
+  nces.yearly.dt,
+  State.District.ID ~ NCES_Locale,
+  fun.aggregate = length
 )
 
-# recover the local categories that were lost in earlier processing
+locale.dt <- nces.computed.cols$locale.cols
+
+locale.prop.dt <- data.table(
+  State.District.ID = locale.dt$State.District.ID
+)
+locale.prop.list <- list()
+# Rename columns indicating origin, 
+for (col in names(nces.computed.cols$locale.cols)) {
+  if (!col %in% no.rename.cols) {
+    locale.col.prop.name <- paste("NCES", "Locale", "prop", col, sep="_")
+    prop.vec <- locale.dt[[paste(col)]]/rowSums(locale.dt[, !c("State.District.ID")])
+    temp.prop.dt <- data.table(
+      State.District.ID = locale.prop.dt$State.District.ID,
+      prop.vec
+    )
+    setnames(temp.prop.dt, "prop.vec", locale.col.prop.name)
+    locale.prop.dt <- locale.prop.dt[temp.prop.dt, on = c("State.District.ID")]
+    prefix.name <- paste("NCES", "Locale", col, sep="_")
+    setnames(nces.computed.cols$locale.cols, col, prefix.name)
+  }
+}
+
+locale.dt <- data.table(locale.prop.list)
+
+# recover the locale categories that were lost in earlier processing
 nces.yearly.dt <- nces.yearly.dt[nces.computed.cols[["locale.cols"]],
   on = .(State.District.ID)
 ]
 
-setnames(
-  nces.yearly.dt,
-  old = c("Free Lunch Eligible [Public School]", "Reduced-price Lunch Eligible Students [Public School]", "Total Students, All Grades (Includes AE) [Public School]"),
-  new = c("Free.Lunch.Eligible", "Reduced.Lunch.Eligible", "Total.Students")
-)
-
-# this value is not correct, should clearly only produce values under 1,
-# but produces values above 1.
-nces.yearly.dt[, Free.Reduced.Lunch.Rate := (as.numeric(get("Free and Reduced Lunch Students [Public School]"))) / as.numeric(Total.Students)]
-
-
-# but we can also make it long
-# count(nces.data, c("State.District.ID", "Locale"))
-
 # for every numeric column, compute the summary statistics,
 # grouped by State.District.ID
-nces.numeric.cols <- c("Students", "Teachers", "Student.Teacher.Ratio", "Free.Lunch", "Reduced.Lunch", "Free/Reduced.Rate")
-
 numeric.col.ops <- c("min", "max", "mean", "sd", "median")
 
 nces.yearly.numeric.cols <- c(
@@ -236,6 +252,12 @@ nces.yearly.numeric.cols <- c(
   "Free.Reduced.Lunch.Rate"
 )
 
+nces.renamed.cols <- c()
+
+for (col in nces.yearly.numeric.cols) {
+  nces.renamed.cols <- c(nces.renamed.cols, paste("NCES", col, sep="_"))
+}
+
 aggregate_dt_columns <- function(dt, which, what) {
   what.computed.cols <- list()
 
@@ -246,7 +268,7 @@ aggregate_dt_columns <- function(dt, which, what) {
         fun <- get(op)
         fun(x)
       }
-      col.name <- paste(col, ".", op, sep = "")
+      col.name <- paste("Calculated_", col, ".", op, sep = "")
       # Should we ignore NA here?
       what.computed.cols[[col.name]] <-
         dt[, op.call(na.omit(get(col))), by = list(State.District.ID, year)]
@@ -256,7 +278,7 @@ aggregate_dt_columns <- function(dt, which, what) {
   what.computed.cols %>% reduce(inner_join, by = c("State.District.ID", "year"))
 }
 
-nces.yearly.computed.dt <- aggregate_dt_columns(nces.yearly.dt, nces.yearly.numeric.cols, numeric.col.ops)
+nces.yearly.computed.dt <- aggregate_dt_columns(nces.yearly.dt, nces.renamed.cols, numeric.col.ops)
 
 nces.yearly.computed.dt <- nces.yearly.computed.dt[nces.computed.cols[["locale.cols"]], on = .(State.District.ID)]
 
@@ -265,10 +287,12 @@ nces.yearly.computed.dt <- nces.yearly.computed.dt[nces.computed.cols[["locale.c
 # }
 # this sets the NA values from the SD of a single number to 0
 nces.yearly.computed.dt[is.na(nces.yearly.computed.dt)] <- 0
+for (col_num in 1:ncol(nces.yearly.computed.dt)) set(nces.yearly.computed.dt, which(is.infinite(nces.yearly.computed.dt[[col_num]])), col_num, 0)
 ```
 
 Merges we are interested in, IC + CWIS + NCES, CWIS + NCES. IC does not have as many rows as CWIS so both merges are interesting to consider.
 ```{r}
+
 
 # subset nces.dt and nces.yearly.dt to rows in DCI program,
 # i.e. those who provide integration checklists.

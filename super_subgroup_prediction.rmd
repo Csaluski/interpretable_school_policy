@@ -59,8 +59,32 @@ full.dt <- full.dt[district.map.combined, on = c("COUNTY_DISTRICT", "year")]
 full.dt <- full.dt[complete.cases(full.dt)]
 ```
 
+Add attendance and discipline statistics
 ```{r}
+full.dt[, COUNTY_DISTRICT_CODE := str_extract(State.District.ID, "\\d{6}")]
+discipline.dt <- fread("Data Sources CSV/District Discipline.csv")
+attendance.dt <- fread("Data Sources CSV/District Proportional Attendance Rates.csv")
 
+discipline.dt <- discipline.dt[, .(YEAR, COUNTY_DISTRICT_CODE, DSCPLN_INCIDENT_RATE)]
+
+attendance.dt <- attendance.dt[, .(YEAR, COUNTY_DISTRICT_CODE, PROPORTIONAL_ATTENDANCE_TOTAL_PCT, PROPORTIONAL_ATTENDANCE_IEP_PCT)]
+
+discipline.dt[, COUNTY_DISTRICT_CODE := str_pad(COUNTY_DISTRICT_CODE, 6, "left", "0")]
+attendance.dt[, COUNTY_DISTRICT_CODE := str_pad(COUNTY_DISTRICT_CODE, 6, "left", "0")]
+
+discipline.dt <- attendance.dt[discipline.dt, on=c("COUNTY_DISTRICT_CODE", "YEAR")]
+full.dt <- full.dt[discipline.dt, on=c("COUNTY_DISTRICT_CODE", "year" = "YEAR")]
+full.dt <- full.dt[complete.cases(full.dt)]
+
+
+for (col in names(full.dt)) {
+  if (grepl("PCT", col)) {
+    full.dt[, paste0(col) := as.numeric(get(col))]
+  }
+}
+```
+
+```{r}
 full.dt[, year.in.program := (year - min(year)) + 1, by = "State.District.ID"]
 full.dt[, cohort := paste(year, year.in.program, sep=".")]
 full.dt <- full.dt[complete.cases(full.dt[, ])]
@@ -93,13 +117,15 @@ yoy.exclude.char.cols <- names(yoy.dt)[as.vector(sapply(yoy.dt, class)) %in% c("
 
 full.exclude.char.cols <- names(full.dt)[as.vector(sapply(full.dt, class)) %in% c("character")]
 
-exclude.cols <- c(yoy.exclude.char.cols, full.exclude.char.cols, "X", "SUMMARY_LEVEL", "DISTRICT_NAME", "CATEGORY", "TYPE", "SCHOOL_NAME", "CONTENT_AREA", "prof.and.adv.pct.total", "prof.pct.total", "prof.pct.iep", "adv.pct.total", "adv.pct.iep",  "cohort"
-# "below.basic.pct.total", "below.basic.pct.iep", "prof.and.adv.pct.gap", "year"
-)
+exclude.cols <- c(yoy.exclude.char.cols, full.exclude.char.cols, "X", "SUMMARY_LEVEL", "DISTRICT_NAME", "CATEGORY", "TYPE", "SCHOOL_NAME", "CONTENT_AREA", "prof.and.adv.pct.total", "prof.pct.total", "prof.pct.iep", "adv.pct.total", "adv.pct.iep",  "cohort",
+"below.basic.pct.total", "below.basic.pct.iep")
 
 exclude.avg.cols <- c("CFA_avg", "PD_avg", "DBDM_avg", "Leadership_avg")
 
-exclude.col.set.list <- list("standard" = exclude.cols, "avgs" = c(exclude.cols, exclude.avg.cols))
+exclude.col.set.list <- list(
+  "standard" = exclude.cols
+  ,"avgs" = c(exclude.cols, exclude.avg.cols)
+  )
 
 task.list <- list()
 
@@ -241,9 +267,9 @@ learner.list <- list()
 learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
 learner.list[["regr.ctree"]] <- LearnerRegrCTree$new()
 learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
+learner.list[["regr.cforest"]] <- LearnerRegrCForest$new()
 # Random forests and tuned ctrees are not providing any benefit over a default
 # ctree, so we don't bother with them.
-# learner.list[["regr.cforest"]] <- LearnerRegrCForest$new()
 
 # learner.list[["regr.at.ctree"]] <- mlr3tuning::AutoTuner$new(
 #     learner = mlr3extralearners::lrn("regr.ctree"),
@@ -266,7 +292,7 @@ learner.list[["regr.at.xgboost"]] <- AutoTuner$new(
     nrounds = p_int(lower = 1, upper = 16)
   ),
   terminator = trm("none"),
-  tuner = tnr("grid_search", resolution = 5),
+  tuner = tnr("grid_search", resolution = 4),
   store_tuning_instance = TRUE
 )
 
@@ -297,7 +323,7 @@ err.plot <- ggplot() +
   geom_point(data = plot.dt, aes(x = regr.mse, y = Method)) +
   facet_grid(task_id ~ .)
 
-png(filename = "./img_out/iep_ela.loss.mse.png", width = 6, height = 60, unit = "in", res = 200)
+png(filename = "./img_out/iep_analysis/iep_ela_delinq.loss_2.mse.png", width = 6, height = 60, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 
@@ -312,6 +338,16 @@ result.dt[, mean.vs.baseline := mean(vs.baseline), by=c("task_id", "learner_id")
 
 improved.ctrees <- unique(result.dt[mean.vs.baseline > 0.25*baseline.mean & learner_id == "regr.ctree"]$task_id)
 
+
+plot.dt <- result.dt[task_id %in% improved.ctrees]
+err.plot <- ggplot() +
+  geom_point(data = plot.dt, aes(x = mean, y = Method), size = 2, color = "red") +
+  geom_point(data = plot.dt, aes(x = regr.mse, y = Method)) +
+  facet_grid(task_id ~ .)
+
+png(filename = "./img_out/iep_analysis/iep_ela_improved.loss_2.mse.png", width = 6, height = 12, unit = "in", res = 200)
+print(err.plot)
+dev.off()
 
 for (task.name in improved.ctrees) {
   curr.dt <- result.dt[task_id == task.name & learner_id == "regr.ctree"]

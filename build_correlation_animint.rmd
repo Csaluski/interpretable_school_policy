@@ -349,51 +349,19 @@ build_correlation_animint <- function(original_dt,
 library(openxlsx)
 library(stringr)
 
-ic.file <- "Data Sources/Data Research Questions/RQ_IC.csv.xlsx"
-
-ic.dt <- as.data.table(read.xlsx(ic.file))
-ic.dt <- ic.dt[complete.cases(ic.dt),]
-ic.district.cols <- unique(ic.dt[["District.Code"]])
-valid.ic.rows <- grepl("MO", ic.district.cols)
-ic.district.cols <- ic.district.cols[valid.ic.rows]
-setnames(ic.dt, "currentSchoolYear", "year")
-
-setnames(ic.dt, "District.Code", "State.District.ID")
-
 full.joined.loc <- "./Data Sources CSV/ic.cwis.nces.computed.combined.csv"
 joined.dt <- fread(full.joined.loc)
 joined.dt <- joined.dt[complete.cases(joined.dt)]
-
 
 for (col in colnames(joined.dt)) {
   new_name <- str_replace_all(col, "[^[:alnum:]._]", ".")
   setnames(joined.dt, col, new_name)
 }
 
-
-# set the columns to the correct names
-ic.col.file <- "./Data Sources/DCI Data/Implementation Checklist/Cross_Walk.xlsx"
-ic.col.dt <- as.data.table(read.xlsx(ic.col.file, colNames = FALSE, cols=2:3))
-setnames(ic.col.dt, colnames(ic.col.dt), c("name", "description"))
-
-
-for (index in 1:nrow(ic.col.dt)) {
-  ic.col.name <- ic.col.dt[index]$name
-  ic.col.desc <- str_trunc(ic.col.dt[index]$description, 50)
-  setnames(ic.dt, ic.col.name, ic.col.desc)
-}
-
-for (col in colnames(ic.dt)) {
-  new_name <- str_replace_all(col, "[^[:alnum:]._]", ".")
-  setnames(ic.dt, col, new_name)
-}
-
-ic.dt <- ic.dt[joined.dt[, .(State.District.ID, year, ETLP_avg)], on=c("State.District.ID", "year")]
-
 glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
 
 glm.coef.dt <- fread(glm.coef.loc)
-glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "etlp.no.cfa"]
+glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "ic.etlp.no.cfa"]
 selected.vars <- unique(glm.coef.dt$var)
 
 # normalize the coefficients of the models
@@ -408,7 +376,7 @@ glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
 glm.coef.dt[, norm.coef := coef * sd]
 # kinda ugly way to add the ETLP_avg to the coefficients plot, so that it shows
 # up in the correlation plots
-glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
+glm.coef.dt <- rbind(glm.coef.dt, list(NA, "CWIS_ETLP_avg", "lambda.min", NA, "ic.etlp.no.cfa", NA, NA))
 
 # get rid of weird characters in the column names
 for (col in colnames(glm.coef.dt)) {
@@ -419,17 +387,18 @@ for (col in colnames(glm.coef.dt)) {
 
 ```{r}
 id.cols <- c("State.District.ID", "year")
-ic.exclude.cols <- colnames(ic.dt)[
+
+ic.cols <- unique(glm.coef.dt$var[grep("IC_", glm.coef.dt$var)])
+ic.exclude.cols <- colnames(joined.dt)[
   !(
-    as.vector(sapply(ic.dt, class)) %in% c("numeric", "int")
-    | (colnames(ic.dt) %in% id.cols)
+    colnames(joined.dt) %in% c(ic.cols, id.cols)
     )
   ]
 
-ic.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols)
+ic.vis <- build_correlation_animint(joined.dt, glm.coef.dt, id.cols, ic.exclude.cols)
 ic.vis$title <- "Correlation of Integration Checklist Variables with GLM models"
 
-ic.heatmap.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols, heatmap = TRUE)
+# ic.heatmap.vis <- build_correlation_animint(ic.dt, glm.coef.dt, id.cols, ic.exclude.cols, heatmap = TRUE)
 
 
 animint2dir(ic.vis, out.dir = "./animint_out/ic", open.browser = FALSE)
@@ -448,7 +417,7 @@ id.cols <- c("State.District.ID", "year")
 
 
 glm.coef.dt <- glm.coef.dt[count > 0]
-glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
+glm.coef.dt <- rbind(glm.coef.dt, list(NA, "CWIS_ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
 
 selected.vars <- unique(glm.coef.dt$var)
 keep.cols <- c(selected.vars, id.cols)
@@ -471,35 +440,6 @@ rm("joined.vis")
 ```
 
 ```{r}
-glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
-
-glm.coef.dt <- fread(glm.coef.loc)
-glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "etlp.no.cfa"]
-selected.vars <- unique(glm.coef.dt$var)
-
-# normalize the coefficients of the models
-joined.sd <- apply(joined.dt[, ..selected.vars], 2, sd)
-glm.coef.sd.dt <- data.table(
-  sd = joined.sd, 
-  var = names(joined.sd)
-)
-
-glm.coef.dt <- glm.coef.sd.dt[glm.coef.dt, on=c("var")]
-glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
-glm.coef.dt[, norm.coef := coef * sd]
-# kinda ugly way to add the ETLP_avg to the coefficients plot, so that it shows
-# up in the correlation plots
-glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
-
-# get rid of weird characters in the column names
-for (col in colnames(glm.coef.dt)) {
-  new_name <- str_replace_all(col, "[^[:alnum:].]", ".")
-  setnames(glm.coef.dt, col, new_name)
-}
-```
-
-
-```{r}
 id.cols <- c("State.District.ID", "year")
 
 glm.coef.loc <- "./Data Sources CSV/regr.glm.coef.csv"
@@ -508,12 +448,16 @@ glm.coef.dt <- fread(glm.coef.loc)
 glm.coef.dt <- glm.coef.dt[method == "lambda.min" & task_id == "cl.no.cfa"]
 
 glm.vars <- glm.coef.dt$var
-glm.new.vars <- sapply(glm.vars, function(x) { sub("coaching_", "", x) })
-glm.coef.dt$var <- glm.new.vars
 
-coaching.agg.loc <- "./Data Sources CSV/coaching.aggregation.csv"
+coaching.agg.loc <- "./Data Sources CSV/ic.cwis.nces.cl.computed.combined.csv"
 coaching.agg.dt <- fread(coaching.agg.loc)
 
+cl.cols <- unique(glm.coef.dt$var[grep("Coaching_", glm.coef.dt$var)])
+cl.exclude.cols <- colnames(coaching.agg.dt)[
+  !(
+    colnames(coaching.agg.dt) %in% c(cl.cols, id.cols)
+    )
+  ]
 
 # normalize the coefficients of the models
 coaching.sd <- apply(coaching.agg.dt[, !..id.cols], 2, sd)
@@ -527,10 +471,9 @@ glm.coef.dt[, sd := ifelse(is.na(sd), 0, sd)]
 glm.coef.dt[, norm.coef := coef * sd]
 glm.coef.dt <- rbind(glm.coef.dt, list(NA, "ETLP_avg", "lambda.min", NA, "etlp.no.cfa", NA, NA))
 
-coaching.agg.dt <- coaching.agg.dt[joined.dt[, .(State.District.ID, year, ETLP_avg)], on=c("State.District.ID", "year")]
 coaching.agg.dt <- coaching.agg.dt[complete.cases(coaching.agg.dt)]
 
-coaching.vis <- build_correlation_animint(coaching.agg.dt, glm.coef.dt, id.cols)
+coaching.vis <- build_correlation_animint(coaching.agg.dt, glm.coef.dt, id.cols, cl.exclude.cols)
 coaching.vis$title <- "Correlation of Coaching Variables with GLM models"
 
 animint2dir(coaching.vis, out.dir = "./animint_out/coaching", open.browser = FALSE)

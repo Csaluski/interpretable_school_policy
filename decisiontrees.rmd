@@ -21,29 +21,53 @@ cl.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.cl.computed.combined.csv"
 ic.joined.dt <- as.data.table(read.csv(ic.joined.dt.loc))
 cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
 cl.joined.dt <- as.data.table(read.csv(cl.joined.dt.loc))
+
+ic.joined.dt <- ic.joined.dt[complete.cases(ic.joined.dt)]
+cwis.joined.dt <- cwis.joined.dt[complete.cases(cwis.joined.dt)]
+cl.joined.dt <- cl.joined.dt[complete.cases(cl.joined.dt)]
+
+data.set.list <- list("IC" = ic.joined.dt, "CWIS" = cwis.joined.dt, "CL" = cl.joined.dt)
 ```
 
 ```{r}
 # these variables are character and variables used in earlier joins so they are not needed
-exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10", "V1")
-ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
-ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", ..exclude.cols)]
-ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
+standard.exclude.cols <- c("X", "State.District.ID", "CWIS_session", "IC_NCES.District.Name..to.check.", "IC_School.District", "IC_Teacher_leader_More_than_6", "IC_Total_more_than_10")
+cfa.exclude.cols <- c(standard.exclude.cols, "CWIS_CFA_avg")
+cwis.exclude.cols <- c(cfa.exclude.cols, "CWIS_DBDM_avg", "CWIS_PD_avg", "CWIS_Leadership_avg")
 
-ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
-ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
-ic.predict.cfa.dt <- ic.predict.cfa.dt[complete.cases(ic.predict.cfa.dt[, ]), ]
+exclude.set.list <- list("standard" = standard.exclude.cols, "CFA" = cfa.exclude.cols, "CWIS" = cwis.exclude.cols)
 
-cl.predict.dt <- cl.joined.dt[, !..exclude.cols]
-cl.predict.no.cfa.dt <- cl.joined.dt[, !c("CFA_avg", ..exclude.cols)]
-cl.predict.cfa.dt <- cl.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
+
+task.list <- list()
+for (exclude.set in names(exclude.set.list)) {
+  exclude.cols <- exclude.set.list[[exclude.set]]
+  for (data.set in names(data.set.list)) {
+    curr.dt <- data.set.list[[data.set]][, !c(..exclude.cols)]
+    task.name <- paste(data.set, "excl.", exclude.set)
+    task.list[[task.name]] <- TaskRegr$new(id = task.name, backend = curr.dt, target = "CWIS_ETLP_avg")
+  }
+}
+
+for (exclude.set in names(exclude.set.list)) {
+  if (exclude.set == "standard") {
+    exclude.cols <- exclude.set.list[[exclude.set]]
+    for (data.set in names(data.set.list)) {
+      curr.dt <- data.set.list[[data.set]][, !c("CWIS_ETLP_avg", ..exclude.cols)]
+      task.name <- paste("CFA", data.set, "excl.", exclude.set)
+      task.list[[task.name]] <- TaskRegr$new(id = task.name, backend = curr.dt, target = "CWIS_CFA_avg")
+    }
+  }
+}
+
+task.name.vec <- names(task.list)
 ```
 
 ```{r}
 set.seed(123)
 num.folds <- 10
 
-# uncomment to run code in parallel, has some issues for me
+# uncomment to run code in parallel, has some issues for me, as it allocates
+# memory for all of the tasks at once, instead of over time and not all at once.
 # if (future::supportsMulticore()) {
 #   future::plan("multicore", workers=4)
 # } else {
@@ -51,45 +75,30 @@ num.folds <- 10
 # }
 # task.backend.names <- c("ic.predict.dt", )
 
-task.full.regr <- TaskRegr$new(id = "etlp", backend = ic.predict.dt, target = "ETLP_avg")
-
-task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "ETLP_avg")
-
-task.cfa.regr <- TaskRegr$new(id = "cfa", backend = ic.predict.cfa.dt, target = "CFA_avg")
-
-task.cl.regr <- TaskRegr$new(id = "cl", backend = cl.predict.dt, target = "ETLP_avg")
-
-task.cl.no.cfa.regr <- TaskRegr$new(id = "cl.no.cfa", backend = cl.predict.no.cfa.dt, target = "ETLP_avg")
-
-task.cl.cfa.regr <- TaskRegr$new(id = "cl.cfa", backend = cl.predict.cfa.dt, target = "CFA_avg")
-
-
-task.name.vec <- c("etlp", "etlp.no.cfa", "cfa", "cl", "cl.no.cfa", "cl.cfa")
-
-task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr, task.cl.regr, task.cl.no.cfa.regr, task.cl.cfa.regr)
-
 measure <- msr("regr.mse")
 
 resampling <- rsmp("cv", folds = num.folds)
 # cv_glmnet returns 2 models, one with s1 and one with minimum
-learner.name.vec <- c("regr.cv_glmnet", "regr.featureless", "regr.ctree")
+learner.name.vec <- c("regr.cv_glmnet", "regr.featureless", "regr.ctree", "regr.cforest")
 learner.list <- list()
 for (name in learner.name.vec) {
   learner.list[[name]] <- lrn(name)
 }
 
-# learner.list[["xgboost.at.lrn"]] <- AutoTuner$new(
-#   learner = lrn("regr.xgboost"),
-#   resampling = rsmp("cv", folds = 3),
-#   measure = measure, # mean squared error
-#   search_space = ps(
-#     eta = p_dbl(lower = 0, upper = 1),
-#     nrounds = p_int(lower = 1, upper = 16)
-#   ),
-#   terminator = trm("none"),
-#   tuner = tnr("grid_search", resolution = 5),
-#   store_tuning_instance = TRUE
-# )
+learner.list[["xgboost.at.lrn"]] <- AutoTuner$new(
+  learner = lrn("regr.xgboost"),
+  resampling = rsmp("cv", folds = 3),
+  measure = measure, # mean squared error
+  search_space = ps(
+    eta = p_dbl(lower = 0, upper = 1),
+    nrounds = p_int(lower = 1, upper = 16)
+  ),
+  terminator = trm("none"),
+  tuner = tnr("grid_search", resolution = 4),
+  store_tuning_instance = TRUE
+)
+
+learner.name.vec <- names(learner.list)
 
 benchmark.obj <- benchmark_grid(
   task = task.list,
@@ -109,10 +118,12 @@ method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-m
 result.dt[, Method := factor(learner_id, method.levels)]
 err.plot <- ggplot() +
   geom_point(data = result.dt, aes(x = regr.mse, y = Method)) +
-  facet_grid(task_id ~ ., labeller = label_both)
+  facet_grid(task_id ~ .)
 
-err.plot
-png(filename = "./img_out/decision.tree.loss.png", width = 6, height = 6, unit = "in", res = 200)
+if (!dir.exists("./img_out/decision_trees/")) {
+  dir.create("./img_out/decision_trees/")
+}
+png(filename = "./img_out/decision_trees/decision.tree.loss.png", width = 6, height = 20, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 ```
@@ -130,21 +141,6 @@ ctree_var_extract <- function(ctree, var.acc.v) {
 
 ctree.dt <- result.dt[learner_id == "regr.ctree"]
 
-ctree.var.list <- list()
-for (task.name in task.name.vec) {
-  curr.learners <- ctree.dt[task.name == task_id]$learner
-
-  for (cv.id in 1:num.folds) {
-    curr.vars <- ctree_var_extract(curr.learners[[cv.id]]$model$node, vector())
-    var.count.dt <- as.data.table(table(curr.vars))
-    var.count.dt[, times.in.tree := N]
-    ctree.var.list[[paste(task.name, cv.id)]] <- data.table(
-      task_id = task.name,
-      var.count.dt,
-      cv.id
-    )
-  }
-}
 # convert all the above code into this single block
 ctree.var.dt <- ctree.dt[, {
   curr.learner <- learner[[1]]
@@ -161,26 +157,36 @@ for (task.name in task.name.vec) {
       geom_point(data = ctree.var.dt[task_id == task.name], aes(x = times.in.tree, y = res.vars)) +
       facet_grid(occurence.n.folds ~ ., scales = "free", space = "free") 
 
-    filename <- paste("./img_out/", task.name, "count.png", sep = "_")
+    dest <- "./img_out/decision_trees/"
+    if (!dir.exists(dest)) {
+      dir.create(dest)
+    }
+    filename <- paste(task.name, "count.png", sep = "_")
+    filename <- paste0(dest, filename, sep = "")
     png(filename = filename, width = 8, height = 6, unit = "in", res = 200)
     print(var.count.plot)
     dev.off()
 }
-
 ```
 
 
 ```{r}
 ctree.model.list <- list()
+if (!dir.exists("./img_out/decision_trees/trees")) {
+  dir.create("./img_out/decision_trees/trees")
+}
 for (task.name in task.name.vec) {
   curr.dt <- ctree.dt[task_id == task.name]
-  dir.create(paste("./img_out/", task.name, sep=""))
+  dest <- paste("./img_out/decision_trees/trees/", task.name, sep = "")
+  if (!dir.exists(dest)) {
+    dir.create(dest)
+  }
   for (fold in 1:num.folds) {
     curr.tree <- curr.dt[iteration == fold]$learner[[1]]$model
 
     filename <- paste(task.name, fold, "tree.png", sep = "_")
-    dest <- paste("./img_out/", task.name, "/" , filename, sep = "")
-    png(filename = dest, width = 20, height = 6, unit = "in", res = 200)
+    filename <- paste(dest, filename, sep = "/")
+    png(filename = filename, width = 20, height = 6, unit = "in", res = 200)
     plot(curr.tree)
     dev.off()
   }

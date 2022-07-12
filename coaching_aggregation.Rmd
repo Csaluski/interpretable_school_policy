@@ -207,7 +207,7 @@ exclude.cols <- c("State.District.ID", "year")
 
 for (col in colnames(coaching.aggregate)) {
   if (!(col %in% exclude.cols)) {
-    setnames(coaching.aggregate, col, paste0("coaching_", col))
+    setnames(coaching.aggregate, col, paste0("Coaching_", col))
   }
 }
 

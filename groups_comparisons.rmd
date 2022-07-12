@@ -1,0 +1,291 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, Comparison to schools outside the program"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(openxlsx)
+```
+
+```{r}
+district.map.dt <- fread("Data Sources CSV/building_map_data/District MAP content area and grade all disag.csv")
+
+district.map.dt[, State.District.ID := paste0("MO-", str_pad(COUNTY_DISTRICT, 6, "left", "0"))]
+
+dci.buildings.dt <- fread("Data Sources/DCI Data/Active Districts/Active_DCI_buildings_2017_2022.csv")
+
+dci.districts.dt <- unique(dci.buildings.dt[, .(State.District.ID, currentSchoolYear)])
+
+dci.districts.dt <- dci.districts.dt[order(currentSchoolYear)]
+
+# Account for years taken off from the program by counting along the years the
+# district was actually in the program
+dci.districts.dt[
+  ,
+  year.in.program := which(.SD$currentSchoolYear == currentSchoolYear),
+  by = "State.District.ID"]
+
+dci.years.dt <- dci.districts.dt
+
+dci.districts.dt <- dci.districts.dt[district.map.dt, on=c("State.District.ID", "currentSchoolYear" = "YEAR")]
+
+dci.districts.dt[, year.in.program := ifelse(is.na(year.in.program), 0, year.in.program)]
+
+dci.districts.dt <- dci.districts.dt[
+  (currentSchoolYear == 2019 | currentSchoolYear == 2021)
+  & TYPE %in% c("Total", "Non IEP Students", "IEP Non MAPA", "IEP_student")]
+
+dci.districts.dt <- dci.districts.dt[CONTENT_AREA == "Eng. Language Arts" & GRADE_LEVEL == "03"]
+
+year.in.program.dt <- unique(dci.districts.dt[, .(State.District.ID, currentSchoolYear, year.in.program, COUNTY_DISTRICT)])
+
+state.average.dt <- fread("./Data Sources CSV/MAP State Average.csv")
+state.average.dt[Type == "IEP (exclude MAPA)", Type := "IEP Non MAPA"]
+# state.average.dt[Type == "Total (exclude MAPA)", Type := "IEP Non MAPA"]
+
+state.average.dt[, PROF_AND_ADV_PCT_STATE := ((Advanced + Proficient) / Reportable) * 100]
+state.average.dt <- state.average.dt[
+  Year >= 2019 & Type %in% unique(dci.districts.dt$TYPE),
+  .(Year, Type, PROF_AND_ADV_PCT_STATE)]
+```
+
+```{r}
+discipline.dt <- fread("Data Sources CSV/District Discipline.csv")
+attendance.dt <- fread("Data Sources CSV/District Proportional Attendance Rates.csv")
+
+discipline.attendance.dt <- discipline.dt[attendance.dt, on=c("YEAR", "COUNTY_DISTRICT_CODE", "DISTRICT_NAME")]
+discipline.attendance.dt <- discipline.attendance.dt[(YEAR == 2019 | YEAR == 2021) & complete.cases(discipline.attendance.dt)]
+
+discipline.attendance.dt <- discipline.attendance.dt[, .(YEAR, COUNTY_DISTRICT_CODE, DSCPLN_INCIDENT_RATE, PROPORTIONAL_ATTENDANCE_K_8_PCT, PROPORTIONAL_ATTENDANCE_IEP_PCT)]
+
+for (col in colnames(discipline.attendance.dt)) {
+  if (grepl("PROPORTIONAL", col)) {
+    num.col <- as.numeric(discipline.attendance.dt[, get(col)])
+    num.col <- ifelse(is.na(num.col), 0, num.col)
+    discipline.attendance.dt[, paste(col) := num.col]
+  }
+}
+
+discipline.map.dt <- dci.districts.dt[discipline.attendance.dt, on=c("currentSchoolYear" = "YEAR", "COUNTY_DISTRICT" = "COUNTY_DISTRICT_CODE")]
+
+# TODO merge discipline with DCI Districts DT
+discipline.map.dt <- discipline.map.dt[complete.cases(discipline.map.dt)]
+
+
+# discipline.diff.dt <- merge(discipline.map.dt, discipline.map.dt,
+#   by = c("State.District.ID"),  
+#   suffixes = c("_2019", "_2021")
+#   )[currentSchoolYear_2019 == 2019 & currentSchoolYear_2021 == 2021,
+#   ]
+
+
+# diff.discipline.cols <- names(discipline.map.dt)[as.vector(sapply(discipline.map.dt, class)) %in% c("numeric", "num", "int")]
+
+# for (col in diff.discipline.cols) {
+#   diff.col.name <- paste(col, "diff", sep=".")
+#   col.x.name <- c(paste(col, "2019", sep="_"))
+#   col.y.name <- c(paste(col, "2021", sep="_"))
+#   # I can't get this to work just using the variable names, so we're using get
+#   discipline.diff.dt[[diff.col.name]] <- discipline.diff.dt[, get(col.y.name) - get(col.x.name)]
+# }
+
+```
+
+```{r}
+
+dci.districts.dt <- dci.districts.dt[state.average.dt, on = c("currentSchoolYear" = "Year", "TYPE" = "Type")]
+
+for (col in names(dci.districts.dt)) {
+  if (grepl("PCT", col)) {
+    dci.districts.dt[, paste0(col) := as.numeric(get(col))]
+  }
+}
+
+
+dci.districts.dt[, PROF_AND_ADV_PCT := PROFICIENT_PCT + ADVANCED_PCT]
+
+# get changes from 2019 to 2021
+covid.diff.dt <- merge(dci.districts.dt, dci.districts.dt,
+  by = c("State.District.ID", "TYPE", "GRADE_LEVEL", "CONTENT_AREA", "SCHOOL_NAME", "SCHOOL_CODE", "DISTRICT_NAME", "COUNTY_DISTRICT", "CATEGORY", "SUMMARY_LEVEL"),  
+  suffixes = c("_2019", "_2021")
+  )[currentSchoolYear_2019 == 2019 & currentSchoolYear_2021 == 2021,
+  ]
+
+diff.cols <- names(dci.districts.dt)[as.vector(sapply(dci.districts.dt, class)) %in% c("numeric", "num", "int")]
+
+for (col in diff.cols) {
+  diff.col.name <- paste(col, "diff", sep=".")
+  col.x.name <- c(paste(col, "2019", sep="_"))
+  col.y.name <- c(paste(col, "2021", sep="_"))
+  # I can't get this to work just using the variable names, so we're using get
+  covid.diff.dt[[diff.col.name]] <- covid.diff.dt[, get(col.y.name) - get(col.x.name)]
+}
+
+covid.diff.dt[, gap.2019 := PROF_AND_ADV_PCT_2019 - PROF_AND_ADV_PCT_STATE_2019]
+covid.diff.dt[, gap.2021 := PROF_AND_ADV_PCT_2021 - PROF_AND_ADV_PCT_STATE_2021] 
+covid.diff.dt[, gap.diff := gap.2021 - gap.2019]
+```
+See how much the proficient and advanced percent changed before and after covid,
+and see if its change was impacted by the number of years in the program.
+```{r}
+year.list <- list()
+box.list <- list()
+
+diff.types <- c("Total", "Non IEP Students", "IEP_student")
+
+for (year in unique(covid.diff.dt$year.in.program_2019)) {
+  for (type in unique(covid.diff.dt$TYPE))
+  {
+    year.list[[paste(type, year)]] <- data.table(
+      value = mean(covid.diff.dt[year.in.program_2019 == year & TYPE == type]$PROF_AND_ADV_PCT.diff),
+      year,
+      type
+      )
+    box.list[[paste(type, year)]] <- data.table(covid.diff.dt[year.in.program_2019 == year & TYPE == type, .(PROF_AND_ADV_PCT.diff, year, type, PROF_AND_ADV_PCT_STATE.diff, State.District.ID, gap.diff)])
+  }
+}
+
+# diff.interest.cols <- c("PROPORTIONAL_ATTENDANCE_TOTAL_PCT", "PROPORTIONAL_ATTENDANCE_IEP_PCT", "DSCPLN_INCIDENT_RATE")
+
+# for (year in unique(covid.diff.dt$year.in.program_2019)) {
+#   for (col in diff.interest.cols)
+#   {
+#     year.list[[paste(col, year)]] <- data.table(
+#       value = mean(covid.diff.dt[year.in.program_2019 >= year, get(paste0(col, ".diff"))]),
+#       year,
+#       type = col
+#       )
+#   }
+# }
+
+covid.diff.res.dt <- data.table(do.call(rbind, year.list))
+covid.diff.res.dt$year <- as.factor(covid.diff.res.dt$year)
+covid.box.dt <- data.table(do.call(rbind, box.list))
+covid.box.dt[, n := paste(year, ", n = ", length(unique(.SD$State.District.ID)), sep = ""), by = year]
+covid.box.dt$year <- as.factor(covid.box.dt$year)
+```
+
+
+```{r}
+library(ggplot2)
+
+dest <- "./img_out/by_iep_groups/"
+if (!dir.exists(dest)) {
+  dir.create(dest)
+}
+
+map.change.plot <- ggplot() +
+  geom_boxplot(
+    data = covid.box.dt,
+    mapping = aes(x = n, y = PROF_AND_ADV_PCT.diff, fill = type)
+    ) +
+  geom_errorbar(
+    data = unique(covid.box.dt[, .(n, type, PROF_AND_ADV_PCT_STATE.diff)]),
+    mapping = aes(
+      x = n,
+      ymin = PROF_AND_ADV_PCT_STATE.diff, ymax = PROF_AND_ADV_PCT_STATE.diff,
+      color = type)
+    ) +
+  xlab("Years in Program in 2019, n = number of districts") +
+  ylab("3rd Grade MAP ELA difference, 2019 to 2021") +
+  labs(title = "MAP ELA changes by years in DCI program", fill = "MAP Group", color = "State Average") 
+
+
+filename <- paste(dest, "map_ela_changes.png", sep = "")
+png(filename = filename, width = 6, height = 8, unit = "in", res = 200)
+plot(map.change.plot)
+dev.off()
+```
+
+
+```{r}
+gap.diff.plot <- ggplot(data = covid.box.dt) +
+  geom_boxplot(aes(x=n, y=gap.diff, fill=type)) +
+  xlab("Years in Program in 2019, n = number of districts") +
+  ylab("3rd Grade MAP ELA State Average Difference, 2019 to 2021") +
+  labs(title = "MAP ELA gap changes by years in DCI program, \n normalized against state average", fill = "MAP Group", color = "State Average") 
+
+
+filename <- paste(dest, "map_ela_diff_changes.png", sep = "")
+png(filename = filename, width = 6, height = 8, unit = "in", res = 200)
+plot(gap.diff.plot)
+dev.off()
+```
+
+```{r}
+
+dci.districts.dt[, n := paste(year.in.program, ", n = ", length(unique(.SD$State.District.ID)), sep = ""), by = c("year.in.program")]
+
+map.years.plot <- ggplot() +
+  geom_boxplot(
+    data = dci.districts.dt,
+    mapping = aes(x = n, y = PROF_AND_ADV_PCT, fill = TYPE)
+    ) +
+  geom_errorbar(
+    data = unique(dci.districts.dt[, .(n, TYPE, PROF_AND_ADV_PCT_STATE, currentSchoolYear)]),
+    mapping = aes(
+      x = n,
+      ymin = PROF_AND_ADV_PCT_STATE, ymax = PROF_AND_ADV_PCT_STATE,
+      color = TYPE)
+    ) +
+  facet_grid(currentSchoolYear ~ .) +
+  xlab("Years in Program in year, n = number of districts in 2021") +
+  ylab("3rd Grade MAP ELA score") +
+  labs(title = "MAP ELA boxplot by years in DCI program in 2021", fill = "MAP Group", color = "State Average") 
+
+filename <- paste(dest, "map_ela_by_year.png", sep = "")
+png(filename = filename, width = 6, height = 8, unit = "in", res = 200)
+plot(map.years.plot)
+dev.off()
+```
+
+```{r}
+
+discipline.map.dt[, n := paste(year.in.program, ", n = ", length(unique(.SD$State.District.ID)), sep = ""), by = c("year.in.program")]
+
+
+discipline.years.plot <- ggplot() +
+  geom_boxplot(
+    data = discipline.map.dt,
+    mapping = aes(x = n, y = DSCPLN_INCIDENT_RATE)
+    ) +
+  facet_grid(currentSchoolYear ~ .) +
+  xlab("Years in Program in year, n = number of districts in 2021") +
+  ylab("") +
+  labs(title = "Discipline rate boxplot by years in DCI program")
+
+filename <- paste(dest, "discipline_by_years.png", sep = "")
+png(filename = filename, width = 6, height = 8, unit = "in", res = 200)
+plot(discipline.years.plot)
+dev.off()
+
+targets <- c("PROPORTIONAL_ATTENDANCE_K_8_PCT","PROPORTIONAL_ATTENDANCE_IEP_PCT")
+
+discipline.attendance.long.dt <- melt(
+  discipline.map.dt,
+  measure.vars = targets,
+  variable.name = "attendance_type",
+  value.name = "attendance_rate"
+  )
+
+attendance.change.plot <- ggplot() +
+  geom_boxplot(
+    data = discipline.attendance.long.dt,
+    mapping = aes(x = n, y = attendance_rate, fill = attendance_type)
+    ) +
+  facet_grid(currentSchoolYear ~ .) +
+  xlab("Years in Program in year, n = number of districts in 2021") +
+  ylab("") +
+  labs(title = "Attendance boxplot by years in DCI program")
+
+filename <- paste(dest, "attendance_by_year.png", sep = "")
+png(filename = filename, width = 10, height = 8, unit = "in", res = 200)
+plot(attendance.change.plot)
+dev.off()
+```

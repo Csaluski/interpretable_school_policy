@@ -11,6 +11,7 @@ library(mlr3)
 library(mlr3learners)
 library(data.table)
 library(mlr3extralearners)
+library(mlr3tuning)
 
 csv.data.loc <- "./Data Sources CSV"
 ic.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.computed.combined.csv", sep = "")
@@ -18,57 +19,87 @@ cwis.joined.dt.loc <- paste(csv.data.loc, "/cwis.nces.computed.combined.csv", se
 cl.joined.dt.loc <- paste(csv.data.loc, "/ic.cwis.nces.cl.computed.combined.csv", sep = "")
 
 ic.joined.dt <- as.data.table(read.csv(ic.joined.dt.loc))
+ic.joined.dt <- ic.joined.dt[complete.cases(ic.joined.dt)]
 cwis.joined.dt <- as.data.table(read.csv(cwis.joined.dt.loc))
 cl.joined.dt <- as.data.table(read.csv(cl.joined.dt.loc))
 ```
 
 ```{r}
-exclude.cols <- c("X", "State.District.ID", "session", "NCES.District.Name..to.check.", "School.District", "Teacher_leader_More_than_6", "Total_more_than_10", "V1")
+exclude.cols <- c("X", "State.District.ID", "CWIS_session", "IC_NCES.District.Name..to.check.", "IC_School.District", "IC_Teacher_leader_More_than_6", "IC_Total_more_than_10")
+
 ic.predict.dt <- ic.joined.dt[, !..exclude.cols]
-ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CFA_avg", ..exclude.cols)]
-ic.predict.cfa.dt <- ic.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
-ic.predict.dt <- ic.predict.dt[complete.cases(ic.predict.dt[, ])]
-ic.predict.no.cfa.dt <- ic.predict.no.cfa.dt[complete.cases(ic.predict.no.cfa.dt[, ])]
-ic.predict.cfa.dt <- ic.predict.cfa.dt[complete.cases(ic.predict.cfa.dt[, ]), ]
+ic.predict.no.cfa.dt <- ic.joined.dt[, !c("CWIS_CFA_avg", ..exclude.cols)]
+ic.predict.cfa.dt <- ic.joined.dt[, !c("CWIS_ETLP_avg", ..exclude.cols)]
+
+cwis.predict.dt <- cwis.joined.dt[, !..exclude.cols]
+cwis.predict.no.cfa.dt <- cwis.joined.dt[, !c("CWIS_CFA_avg", ..exclude.cols)]
+cwis.predict.cfa.dt <- cwis.joined.dt[, !c("CWIS_ETLP_avg", ..exclude.cols)]
+
 cl.predict.dt <- cl.joined.dt[, !..exclude.cols]
-cl.predict.no.cfa.dt <- cl.joined.dt[, !c("CFA_avg", ..exclude.cols)]
-cl.predict.cfa.dt <- cl.joined.dt[, !c("ETLP_avg", ..exclude.cols)]
+cl.predict.no.cfa.dt <- cl.joined.dt[, !c("CWIS_CFA_avg", ..exclude.cols)]
+cl.predict.cfa.dt <- cl.joined.dt[, !c("CWIS_ETLP_avg", ..exclude.cols)]
 ```
 
 ```{r}
 set.seed(123)
 num.folds <- 10
 
-task.full.regr <- TaskRegr$new(id = "etlp", backend = ic.predict.dt, target = "ETLP_avg")
+task.full.regr <- TaskRegr$new(id = "ic.etlp", backend = ic.predict.dt, target = "CWIS_ETLP_avg")
 
-task.no.cfa.regr <- TaskRegr$new(id = "etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "ETLP_avg")
+task.no.cfa.regr <- TaskRegr$new(id = "ic.etlp.no.cfa", backend = ic.predict.no.cfa.dt, target = "CWIS_ETLP_avg")
 
-task.cfa.regr <- TaskRegr$new(id = "cfa", backend = ic.predict.cfa.dt, target = "CFA_avg")
+task.cfa.regr <- TaskRegr$new(id = "ic.cfa", backend = ic.predict.cfa.dt, target = "CWIS_CFA_avg")
 
-task.cl.regr <- TaskRegr$new(id = "cl", backend = cl.predict.dt, target = "ETLP_avg")
 
-task.cl.no.cfa.regr <- TaskRegr$new(id = "cl.no.cfa", backend = cl.predict.no.cfa.dt, target = "ETLP_avg")
+task.cwis.full.regr <- TaskRegr$new(id = "cwis.etlp", backend = cwis.predict.dt, target = "CWIS_ETLP_avg")
 
-task.cl.cfa.regr <- TaskRegr$new(id = "cl.cfa", backend = cl.predict.cfa.dt, target = "CFA_avg")
+task.cwis.no.cfa.regr <- TaskRegr$new(id = "cwis.etlp.no.cfa", backend = cwis.predict.no.cfa.dt, target = "CWIS_ETLP_avg")
 
-task.name.vec <- c("etlp", "etlp.no.cfa", "cfa", "cl", "cl.no.cfa", "cl.cfa")
+task.cwis.cfa.regr <- TaskRegr$new(id = "cwis.cfa", backend = cwis.predict.cfa.dt, target = "CWIS_CFA_avg")
 
-task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr, task.cl.regr, task.cl.no.cfa.regr, task.cl.cfa.regr)
+
+task.cl.regr <- TaskRegr$new(id = "cl", backend = cl.predict.dt, target = "CWIS_ETLP_avg")
+
+task.cl.no.cfa.regr <- TaskRegr$new(id = "cl.no.cfa", backend = cl.predict.no.cfa.dt, target = "CWIS_ETLP_avg")
+
+task.cl.cfa.regr <- TaskRegr$new(id = "cl.cfa", backend = cl.predict.cfa.dt, target = "CWIS_CFA_avg")
+
+task.name.vec <- c("ic.etlp", "ic.etlp.no.cfa", "ic.cfa", "cwis.etlp", "cwis.etlp.no.cfa", "cwis.cfa", "cl", "cl.no.cfa", "cl.cfa")
+
+task.list <- list(task.full.regr, task.no.cfa.regr, task.cfa.regr, task.cwis.full.regr, task.cwis.no.cfa.regr, 
+task.cwis.cfa.regr, 
+task.cl.regr, task.cl.no.cfa.regr, task.cl.cfa.regr)
+
+learner.list <- list()
+learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
+learner.list[["regr.ctree"]] <- LearnerRegrCTree$new()
+# cv_glmnet returns 2 models, one with s1 and one with minimum
+learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
+learner.list[["regr.cforest"]] <- LearnerRegrCForest$new()
+
+learner.list[["regr.xgboost.tuned"]] <- AutoTuner$new(
+  learner = lrn("regr.xgboost"),
+  resampling = rsmp("cv", folds = 3),
+  measure = msr("regr.mse"),
+  search_space = ps(
+    eta = p_dbl(lower = 0, upper = 1),
+    nrounds = p_int(lower = 1, upper = 16)
+  ),
+  terminator = trm("none"),
+  tuner = tnr("grid_search", resolution = 5),
+  store_tuning_instance = TRUE
+)
+
+learner.name.vec <- names(learner.list)
 
 resampling <- rsmp("cv", folds = num.folds)
-# cv_glmnet returns 2 models, one with s1 and one with minimum
-learner.name.vec <- c("regr.cv_glmnet", "regr.featureless")
-learner.list <- list()
-for (name in learner.name.vec) {
-  learner.list[[name]] <- lrn(name)
-}
 
 benchmark.obj <- benchmark_grid(
+  # tasks, learners, and resamplings
+  # we'll only give a learner vector, same tasks and resamplings
   task = task.list,
   learners = learner.list,
   resamplings = list(resampling)
-  # tasks, learners, and resamplings
-  # we'll only give a learner vector, same tasks and resamplings
 )
 
 benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
@@ -122,7 +153,6 @@ err.dt <- do.call(rbind, score.result.list)
 
 LASSO models prove to be much more accurate than the featureless model, disproving the null hypothesis. 
 ```{r}
-
 library(ggplot2)
 method.levels <- err.dt[, .(mean = mean(mse.loss)), by = method][order(-mean), method]
 err.dt[, Method := factor(method, method.levels)]
@@ -131,7 +161,7 @@ err.plot <- ggplot() +
   ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ .)
 
-png(filename = "./img_out/regr.loss.mse.all.png", width = 6, height = 6, unit = "in", res = 200)
+png(filename = "./img_out/glmnet/regr.loss.mse.all.png", width = 6, height = 12, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 
@@ -139,19 +169,19 @@ dev.off()
 err.plot <- ggplot() +
   geom_point(data = err.dt[Method %in% c("regr.cv_glmnet.min", "regr.cv_glmnet.1se", "regr.featureless")], aes(x = mse.loss, y = Method)) +
   ggtitle(paste("MSE loss by method and task")) +
-  facet_grid(task.name ~ ., labeller = label_both)
+  facet_grid(task.name ~ .)
 
-png(filename = "./img_out/regr.loss.mse.both.png", width = 6, height = 4, unit = "in", res = 200)
+png(filename = "./img_out/glmnet/regr.loss.mse.both.png", width = 6, height = 8, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 
 
 err.plot <- ggplot() +
-  geom_point(data = err.dt[Method %in% c("regr.cv_glmnet.min", "regr.cv_glmnet.1se", "regr.featureless") & task.name == "etlp"], aes(x = mse.loss, y = Method)) +
+  geom_point(data = err.dt[Method %in% c("regr.cv_glmnet.min", "regr.cv_glmnet.1se", "regr.featureless") & task.name == "ic.etlp"], aes(x = mse.loss, y = Method)) +
   ggtitle(paste("MSE loss by method and task")) +
   facet_grid(task.name ~ ., labeller = label_both)
 
-png(filename = "./img_out/regr.loss.mse.etlp.png", width = 6, height = 4, unit = "in", res = 200)
+png(filename = "./img_out/glmnet/regr.loss.mse.etlp.png", width = 6, height = 4, unit = "in", res = 200)
 print(err.plot)
 dev.off()
 ```
@@ -180,7 +210,6 @@ for (task.name in task.name.vec) {
   }
 }
 
-
 # this dt has columns of coefs of each var and a column with the method
 glm.coef.dt <- do.call(rbind, glm.coef.list)
 
@@ -203,11 +232,11 @@ for (method.select in glm.method.v) {
     var.coef.plot <- ggplot() +
       geom_point(data = glm.coef.dt[method.select == method & task_id == task.name & count > 0], aes(x = coef, y = var)) +
       facet_grid(count ~ ., scales = "free", space = "free") +
-      ggtitle(paste("coefficients of model ", method.select, " in task ", task.name)) 
+      ggtitle(paste("Coefficients of model ", method.select, " in task ", task.name)) 
     # scale_y_continuous(breaks=1:num.folds)
-    filename <- paste("img_out/",method.select, task.name, ".png", sep = "")
+    filename <- paste("img_out/glmnet/glm_results/",method.select, task.name, ".png", sep = "")
     print(filename)
-    png(filename = filename, width = 8, height = 8, unit = "in", res = 200)
+    png(filename = filename, width = 12, height = 8, unit = "in", res = 200)
     print(var.coef.plot)
     dev.off()
   }
