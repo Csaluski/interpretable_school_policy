@@ -289,3 +289,43 @@ png(filename = filename, width = 10, height = 8, unit = "in", res = 200)
 plot(attendance.change.plot)
 dev.off()
 ```
+
+As all of the previous comparisons show that the schools in the DCI programs have no significant improvement over those outside of it, and in many cases are worse, we inspect whether these schools were also below performing worse before the DCI programs were implemented. 
+```{r}
+dci.years.dt[, total.years.2022 := max(.SD$year.in.program), by = State.District.ID]
+
+dci.total.years <- unique(dci.years.dt[, .(State.District.ID, total.years.2022)])
+
+comparison.map.dt <- district.map.dt[CONTENT_AREA == "Eng. Language Arts" & GRADE_LEVEL == "03"]
+
+comparison.map.dt <- comparison.map.dt[dci.total.years, on = c("State.District.ID"), nomatch = NULL]
+
+
+state.average.dt <- fread("./Data Sources CSV/MAP State Average.csv")
+state.average.dt[Type == "IEP (exclude MAPA)", Type := "IEP Non MAPA"]
+
+state.average.dt[, PROF_AND_ADV_PCT_STATE := ((Advanced + Proficient) / Reportable) * 100]
+
+comparison.map.dt <- comparison.map.dt[state.average.dt, on = c("YEAR" = "Year", "TYPE" = "Type"), nomatch = NULL]
+
+comparison.map.dt[, PROFICIENT_PCT := as.numeric(PROFICIENT_PCT)]
+comparison.map.dt[, ADVANCED_PCT := as.numeric(ADVANCED_PCT)]
+comparison.map.dt[, YEAR := as.factor(YEAR)]
+
+comparison.map.dt[, PROF_AND_ADV_PCT := PROFICIENT_PCT + ADVANCED_PCT]
+comparison.map.dt[, state.avg.diff := PROF_AND_ADV_PCT - PROF_AND_ADV_PCT_STATE]
+
+
+yearly.map.diff.by.cohort.plot <-  ggplot(comparison.map.dt) +
+  geom_boxplot(
+    mapping = aes(x = YEAR, y = state.avg.diff, fill = TYPE)
+  ) +
+    facet_grid(
+      total.years.2022 ~ .
+    )
+
+filename <- paste(dest, "map_by_year_and_cohort.png", sep = "")
+png(filename = filename, width = 6, height = 12, unit = "in", res = 200)
+plot(yearly.map.diff.by.cohort.plot)
+dev.off()
+```
