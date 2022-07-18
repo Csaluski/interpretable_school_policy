@@ -303,7 +303,7 @@ cwis.nces.computed.combined.dt <- cwis.avg.dt[nces.yearly.computed.dt, on = .(St
 
 ic.cwis.nces.computed.combined.dt <- ic.dt[cwis.nces.computed.combined.dt, on=.(State.District.ID, year), nomatch=NULL]
 
-# write.csv(nces.computed.dt, "./Data Sources CSV/nces.computed.csv")
+write.csv(nces.yearly.computed.dt, "./Data Sources CSV/nces.yearly.computed.csv")
 write.csv(cwis.nces.computed.combined.dt, "./Data Sources CSV/cwis.nces.computed.combined.csv")
 write.csv(ic.cwis.nces.computed.combined.dt, "./Data Sources CSV/ic.cwis.nces.computed.combined.csv")
 ```

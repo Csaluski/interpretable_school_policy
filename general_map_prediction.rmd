@@ -1,0 +1,199 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, By Years in Program"
+author: "Charles Saluski"
+# date: "1/4/2022"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(mlr3)
+library(mlr3learners)
+library(mlr3extralearners)
+library(mlr3tuning)
+```
+
+
+```{r}
+district.map.dt <- fread("Data Sources CSV/building_map_data/District MAP content area and grade all disag.csv")
+
+district.map.dt <- district.map.dt%>%
+        mutate(PROFICIENT_PCT=as.numeric(PROFICIENT_PCT))%>%
+        mutate(BELOW_BASIC_PCT=as.numeric(BELOW_BASIC_PCT))%>%
+        mutate(ADVANCED_PCT=as.numeric(ADVANCED_PCT))%>%
+        mutate(PCT_PROFICIENT_AND_ADVANCED=PROFICIENT_PCT+ADVANCED_PCT)%>%
+        select(YEAR:GRADE_LEVEL,BELOW_BASIC_PCT:PCT_PROFICIENT_AND_ADVANCED)
+
+district.map.dt <- district.map.dt[GRADE_LEVEL=='03'&CONTENT_AREA=='Eng. Language Arts' & TYPE %in% c("Total", "IEP_student")]
+
+district.map.total <- district.map.dt[TYPE=="Total", .(YEAR, COUNTY_DISTRICT, below.basic.pct.total = BELOW_BASIC_PCT, prof.pct.total = PROFICIENT_PCT, adv.pct.total = ADVANCED_PCT, prof.and.adv.pct.total = PCT_PROFICIENT_AND_ADVANCED)]
+
+district.map.iep <- district.map.dt[TYPE=="IEP_student", .(YEAR, COUNTY_DISTRICT, below.basic.pct.iep = BELOW_BASIC_PCT, prof.pct.iep = PROFICIENT_PCT, adv.pct.iep = ADVANCED_PCT, prof.and.adv.pct.iep = PCT_PROFICIENT_AND_ADVANCED)]
+
+district.map.combined <- district.map.total[district.map.iep, on = c("YEAR", "COUNTY_DISTRICT")]
+district.map.combined <- district.map.combined[complete.cases(district.map.combined)]
+
+district.map.combined[, prof.and.adv.pct.gap := prof.and.adv.pct.total - prof.and.adv.pct.iep]
+
+# In this table the year is when the MAP was taken, not the start of the
+# school year like in our other tables, so we make them the same
+district.map.combined[, year := YEAR - 1]
+district.map.combined$YEAR <- NULL
+
+nces.yearly.computed.dt <- fread("./Data Sources CSV/nces.yearly.computed.csv")
+nces.yearly.computed.dt[, COUNTY_DISTRICT := as.integer(str_extract(State.District.ID, "\\d+"))]
+
+map.joined.dt <- nces.yearly.computed.dt[district.map.combined, on = c("COUNTY_DISTRICT", "year")]
+map.joined.dt <- map.joined.dt[complete.cases(map.joined.dt)]
+
+clean.col.names <- sapply(colnames(map.joined.dt), function(str) {str_replace_all(str, "[^[:alnum:]._]", ".")})
+
+setnames(map.joined.dt, colnames(map.joined.dt), clean.col.names)
+
+full.exclude.char.cols <- names(map.joined.dt)[as.vector(sapply(map.joined.dt, class)) %in% c("character")]
+
+exclude.cols <- c(full.exclude.char.cols, "X", "SUMMARY_LEVEL", "DISTRICT_NAME", "CATEGORY", "TYPE", "SCHOOL_NAME", "CONTENT_AREA", "prof.pct.total", "prof.pct.iep", "adv.pct.total", "adv.pct.iep",  "cohort",
+"below.basic.pct.total", "below.basic.pct.iep")
+
+gap.exclude.cols <- c(exclude.cols, "prof.and.adv.pct.total", "prof.and.and.pct.iep")
+iep.exclude.cols <- c(exclude.cols, "prof.and.adv.pct.total", "prof.and.adv.pct.gap")
+total.exclude.cols <- c(exclude.cols, "prof.and.adv.pct.iep", "prof.and.adv.pct.gap")
+```
+
+```{r}
+task.list <- list()
+
+target.exclude.list <- list(prof.and.adv.pct.gap = gap.exclude.cols, prof.and.adv.pct.total = total.exclude.cols, prof.and.adv.pct.iep = iep.exclude.cols)
+
+for (target in names(target.exclude.list)) {
+  exclude.cols <- target.exclude.list[[target]]
+  task.list[[target]] <- TaskRegr$new(id = target, backend = map.joined.dt[, !..exclude.cols], target = target)
+}
+```
+
+```{r}
+learner.list <- list()
+learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
+learner.list[["regr.ctree"]] <- LearnerRegrCTree$new()
+learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
+# learner.list[["regr.cforest"]] <- LearnerRegrCForest$new()
+# Random forests and tuned ctrees are not providing any benefit over a default
+# ctree, so we don't bother with them.
+
+# learner.list[["regr.at.ctree"]] <- mlr3tuning::AutoTuner$new(
+#     learner = mlr3extralearners::lrn("regr.ctree"),
+#     resampling = mlr3::rsmp("cv", folds = 3),
+#     measure = msr("regr.mse"),
+#     search_space = paradox::ps(
+#       mincriterion = paradox::p_dbl(lower = 0, upper = 1)
+#     ),
+#     terminator = mlr3tuning::trm("none"),
+#     tuner = mlr3tuning::tnr("grid_search", resolution = 11),
+#     store_tuning_instance = TRUE
+#   )
+
+learner.list[["regr.at.xgboost"]] <- AutoTuner$new(
+  learner = lrn("regr.xgboost"),
+  resampling = rsmp("cv", folds = 3),
+  measure = msr("regr.mse"),
+  search_space = ps(
+    eta = p_dbl(lower = 0, upper = 1),
+    nrounds = p_int(lower = 1, upper = 16)
+  ),
+  terminator = trm("none"),
+  tuner = tnr("grid_search", resolution = 4),
+  store_tuning_instance = TRUE
+)
+
+learner.name.vec <- names(learner.list)
+
+num.folds <- 10
+resampling <- rsmp("cv", folds = num.folds)
+
+benchmark.obj <- benchmark_grid(
+  task = task.list,
+  learners = learner.list,
+  resamplings = list(resampling)
+)
+benchmark.res <- benchmark(benchmark.obj, store_models = TRUE)
+measure <- msr("regr.mse")
+result.dt <- benchmark.res$score(measure)
+```
+
+```{r}
+
+library(ggplot2)
+method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-mean), learner_id]
+result.dt[, Method := factor(learner_id, method.levels)]
+result.dt[, mean := mean(regr.mse), by = c("learner_id", "task_id")]
+
+plot.dt <- result.dt
+err.plot <- ggplot() +
+  geom_point(data = plot.dt, aes(x = mean, y = Method), size = 2, color = "red") +
+  geom_point(data = plot.dt, aes(x = regr.mse, y = Method)) +
+  facet_grid(task_id ~ .)
+
+png(filename = "./img_out/map_prediction/map.predict.loss.png", width = 6, height = 8, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+
+
+```
+
+
+```{r}
+
+# we want a dt with each model's coefficients
+# then count and display which coefficients are important
+cv.glm.dt <- result.dt[learner_id == "regr.cv_glmnet"]
+glm.method.v <- c("lambda.min", "lambda.1se")
+glm.coef.list <- list()
+task.name.vec <- names(task.list)
+for (task.name in task.name.vec) {
+  curr.dt <- cv.glm.dt[task_id == task.name]
+  for (method in glm.method.v) {
+    for (fold in 1:num.folds) {
+      curr.coef.mat <- as.matrix(
+        coef(curr.dt[iteration == fold]$learner[[1]]$model, s = method)[-1, ]
+      )
+      glm.coef.list[[paste(method, task.name, fold)]] <- data.table(
+        method,
+        var = rownames(curr.coef.mat),
+        coef = as.numeric(curr.coef.mat),
+        task_id = task.name
+      )
+    }
+  }
+}
+
+
+# this dt has columns of coefs of each var and a column with the method
+glm.coef.dt <- do.call(rbind, glm.coef.list)
+
+# dt with var method coef
+# make count
+glm.coef.dt[, count := sum(coef != 0), by = .(method, task_id, var)]
+
+
+for (method.select in glm.method.v) {
+  for (task.name in task.name.vec) {
+    var.coef.plot <- ggplot() +
+      geom_point(data = glm.coef.dt[method.select == method & task_id == task.name & count > 0], aes(x = coef, y = var)) +
+      facet_grid(count ~ ., scales = "free", space = "free") +
+      ggtitle(paste("coefficients of model ", method.select, " in task ", task.name)) 
+    # scale_y_continuous(breaks=1:num.folds)
+    dest <- paste("./img_out/map_prediction/", task.name, "/", sep = "")
+    if (!dir.exists(dest)) {
+      dir.create(dest)
+    }
+    filename <- paste(dest, task.name, ".png", sep = "")
+    png(filename = filename, width = 8, height = 8, unit = "in", res = 200)
+    print(var.coef.plot)
+    dev.off()
+  }
+}
+
+```

@@ -36,3 +36,5 @@ The code used to create these visualizations is [here](./super_subgroup_predicti
 A simple comparison of schools participating in the DCI program in the year prior and after the outbreak of the Covid-19 pandemic was then conducted, aiming to examine which schools suffered more or less greatly during the year where most instruction was online. 
 
 MAP scores, discipline rates, and attendance rates were examined by the number of years in the DCI programs, both before and after the pandemic year. The code is [here](./groups_comparisons.rmd), and the results can be found [here](./img_out/by_iep_groups/).
+
+An attempt was made to predict MAP scores state wide by utilizing GLM and decision tree models with the available NCES data, using the code in [this file](./general_map_prediction.rmd); however no significant results were found in the results, seen [here](./img_out/map_prediction/).
