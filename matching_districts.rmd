@@ -1,0 +1,167 @@
+We will use free and reduced lunch (FRL), enrollment number (Enroll), percentage of non-whote students (Nonwhitepercent), and percentage of students passing exams (Passratebase) for our matching. 
+
+```{r}
+library(MatchIt)
+library(data.table)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(openxlsx)
+
+district.map.dt <- fread("Data Sources CSV/building_map_data/District MAP content area and grade all disag.csv")
+
+district.map.dt[, State.District.ID := paste0("MO-", str_pad(COUNTY_DISTRICT, 6, "left", "0"))]
+
+district.map.dt[, PROFICIENT_PCT := as.numeric(PROFICIENT_PCT)]
+district.map.dt[, PROFICIENT_PCT := ifelse(is.na(PROFICIENT_PCT), 0, PROFICIENT_PCT)]
+
+district.map.dt[, ADVANCED_PCT := as.numeric(ADVANCED_PCT)]
+district.map.dt[, ADVANCED_PCT := ifelse(is.na(ADVANCED_PCT), 0, ADVANCED_PCT)]
+district.map.dt[, passratebase := PROFICIENT_PCT + ADVANCED_PCT]
+
+district.demographic.dt <- data.table(read.xlsx("Data Sources/Comparison_Group/District Demographic Data.xlsx"))
+district.enrollment.dt <- data.table(read.xlsx("Data Sources/Comparison_Group/District Enrollment.xlsx"))
+
+district.demographic.dt[, State.District.ID := paste0("MO-", str_pad(COUNTY_DISTRICT_CODE, 6, "left", "0"))]
+district.enrollment.dt[, State.District.ID := paste0("MO-", str_pad(COUNTY_DISTRICT_CODE, 6, "left", "0"))]
+
+joined.dt <- district.map.dt[district.demographic.dt, on = c("YEAR", "State.District.ID", nomatch = NULL)]
+joined.dt <- joined.dt[district.enrollment.dt, on = c("YEAR", "State.District.ID", nomatch = NULL)]
+# match within a year against other schools
+joined.dt <- joined.dt[YEAR == 2019 | YEAR == 2018 | YEAR == 2020]
+```
+
+```{r}
+dci.buildings.dt <- fread("Data Sources/DCI Data/Active Districts/Active_DCI_buildings_2017_2022.csv")
+
+dci.districts.dt <- unique(dci.buildings.dt[, .(State.District.ID, currentSchoolYear)])
+
+dci.districts.dt <- dci.districts.dt[order(currentSchoolYear)]
+
+# Account for years taken off from the program by counting along the years the
+# district was actually in the program
+dci.districts.dt[
+  ,
+  year.in.program := which(.SD$currentSchoolYear == currentSchoolYear),
+  by = "State.District.ID"]
+
+dci.joined.dt <- dci.districts.dt[joined.dt, on = c("State.District.ID", "currentSchoolYear" = "YEAR"), nomatch = NA]
+
+
+selected.year <- unique(dci.districts.dt[year.in.program == 1, .(currentSchoolYear, State.District.ID)])
+dci.districts.2021 <- dci.districts.dt[currentSchoolYear == 2021]
+
+
+dci.joined.dt[, Enroll := ENROLLMENT_GRADES_PK_12]
+dci.joined.dt[, Enroll := ENROLLMENT_GRADES_PK_12]
+dci.joined.dt[, Enroll := as.numeric(Enroll)]
+dci.joined.dt[, FRL := LUNCH_COUNT_FREE_REDUCED_PCT]
+dci.joined.dt[, FRL := as.numeric(FRL)]
+dci.joined.dt[, FRL := ifelse(is.na(FRL), 0, FRL)]
+
+dci.joined.dt[, ENROLLMENT_WHITE_PCT := as.numeric(ENROLLMENT_WHITE_PCT)]
+dci.joined.dt[, ENROLLMENT_WHITE_PCT := ifelse(is.na(ENROLLMENT_WHITE_PCT), 0, ENROLLMENT_WHITE_PCT)]
+dci.joined.dt[, nonwhitepercent := 100 - ENROLLMENT_WHITE_PCT]
+
+dci.joined.dt[, PROFICIENT_PCT := as.numeric(PROFICIENT_PCT)]
+dci.joined.dt[, PROFICIENT_PCT := ifelse(is.na(PROFICIENT_PCT), 0, PROFICIENT_PCT)]
+
+started.2019 <- selected.year[currentSchoolYear == 2019 & State.District.ID %in% dci.districts.2021$State.District.ID]
+started.2020 <- selected.year[currentSchoolYear == 2020 & State.District.ID %in% dci.districts.2021$State.District.ID]
+
+other.dci.districts.2019 <- selected.year[!State.District.ID %in% started.2019$State.District.ID]
+other.dci.districts.2020 <- selected.year[!State.District.ID %in% started.2020$State.District.ID]
+
+# Schools that started in 2019 are 1 year
+print(table(unique(dci.joined.dt[currentSchoolYear == 2019, .(year.in.program, State.District.ID)])$year.in.program))
+# Schools that started in 2020 are 1 year
+print(table(unique(dci.joined.dt[currentSchoolYear == 2020, .(year.in.program, State.District.ID)])$year.in.program))
+
+
+```
+
+
+```{r}
+dci.joined.dt <- dci.joined.dt[GRADE_LEVEL == "03" & CONTENT_AREA == "Eng. Language Arts"]
+
+# cohort 2 started treatment in 2019, so 2018 is the year for the baseline
+dci.cohort2.dt <- dci.joined.dt[currentSchoolYear == 2018 & !State.District.ID %in% other.dci.districts.2019$State.District.ID] 
+dci.cohort2.dt[, treated := State.District.ID %in% started.2019$State.District.ID]
+
+dci.cohort2.iep.dt <- dci.cohort2.dt[TYPE == "IEP Non MAPA"]
+
+# cohort 3 started treatment in 2020, so 2019 is year for baseline
+dci.cohort3.dt <- dci.joined.dt[currentSchoolYear == 2019 & !State.District.ID %in% other.dci.districts.2020$State.District.ID]
+dci.cohort3.dt[, treated := State.District.ID %in% started.2020$State.District.ID]
+dci.cohort3.iep.dt <- dci.cohort3.dt[TYPE == "IEP Non MAPA"]
+
+```
+
+```{r}
+m.cohort2.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort2.iep.dt, method = "nearest", distance = "glm" )
+
+m.cohort3.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort3.iep.dt, method = "nearest", distance = "glm" )
+
+summary(m.cohort2.matched.out)
+matched.cohort2.districts.dt <- match.data(m.cohort2.matched.out)
+
+summary(m.cohort3.matched.out)
+matched.cohort3.districts.dt <- match.data(m.cohort3.matched.out)
+```
+
+```{r}
+matched.cohort3.districts.dt <- matched.cohort3.districts.dt[, .(State.District.ID, FRL, Enroll, nonwhitepercent, passratebase, treated, currentSchoolYear)]
+matched.cohort3.districts.dt[, cohort := 3]
+
+matched.cohort2.districts.dt <- matched.cohort2.districts.dt[, .(State.District.ID, FRL, Enroll, nonwhitepercent, passratebase, treated, currentSchoolYear)]
+matched.cohort2.districts.dt[, cohort := 2]
+
+matched.cohorts.dt <- rbind(matched.cohort2.districts.dt, matched.cohort3.districts.dt)
+
+```
+
+```{r}
+map.2021.result <- district.map.dt[YEAR == 2021 & TYPE == "IEP Non MAPA" & GRADE_LEVEL == "03" & CONTENT_AREA == "Eng. Language Arts"]
+
+map.2021.result <- map.2021.result[State.District.ID %in% matched.cohorts.dt$State.District.ID]
+
+map.2021.result[, passrate2021 := passratebase]
+map.2021.result <- map.2021.result[, .(State.District.ID, passrate2021)]
+
+matched.cohorts.dt <- matched.cohorts.dt[map.2021.result, on = c("State.District.ID")]
+matched.cohorts.dt[, change := passrate2021 - passratebase]
+
+matched.summary.dt <- matched.cohorts.dt[, unlist(recursive = F, lapply(
+  .(mean = mean, sd = sd, sum = sum, count = length),
+  function(f) lapply(.SD, f)
+)), by = c("treated", "cohort"), .SDcols = c("FRL", "Enroll", "nonwhitepercent", "passratebase", "passrate2021", "change")]
+
+write.csv(matched.summary.dt, file = "./Data Sources CSV/Matching/summary.csv")
+
+print(t.test(matched.cohorts.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2]$change))
+
+print(t.test(matched.cohorts.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3]$change))
+```
+
+Welch Two Sample t-test
+
+data:  matched.cohorts.dt[treated == T & cohort == 2]$change and matched.cohorts.dt[treated == F & cohort == 2]$change
+t = 1.5, df = 59.931, p-value = 0.1389
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -2.766547 19.354426
+sample estimates:
+mean of x mean of y 
+-1.596970 -9.890909 
+
+
+Welch Two Sample t-test
+
+data:  matched.cohorts.dt[treated == T & cohort == 3]$change and matched.cohorts.dt[treated == F & cohort == 3]$change
+t = -1.0001, df = 140.76, p-value = 0.319
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -12.573070   4.125754
+sample estimates:
+mean of x mean of y 
+-8.150685 -3.927027 
