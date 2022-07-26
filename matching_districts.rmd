@@ -24,6 +24,8 @@ district.map.dt[, ADVANCED_PCT := as.numeric(ADVANCED_PCT)]
 district.map.dt[, ADVANCED_PCT := ifelse(is.na(ADVANCED_PCT), 0, ADVANCED_PCT)]
 district.map.dt[, passratebase := PROFICIENT_PCT + ADVANCED_PCT]
 
+iep.reported.2021.districts <- unique(district.map.dt[GRADE_LEVEL == 3 & TYPE == "IEP Non MAPA" & YEAR == 2021]$State.District.ID)
+
 district.demographic.dt <- data.table(read.xlsx("Data Sources/Comparison_Group/District Demographic Data.xlsx"))
 district.enrollment.dt <- data.table(read.xlsx("Data Sources/Comparison_Group/District Enrollment.xlsx"))
 
@@ -43,11 +45,13 @@ dci.districts.dt <- unique(dci.buildings.dt[, .(State.District.ID, currentSchool
 
 dci.districts.dt <- dci.districts.dt[order(currentSchoolYear)]
 
+all.dci.districts <- unique(dci.districts.dt$State.District.ID)
+
 # Account for years taken off from the program by counting along the years the
 # district was actually in the program
 dci.districts.dt[
   ,
-  year.in.program := which(.SD$currentSchoolYear == currentSchoolYear),
+  year.in.program := 1:nrow(.SD),
   by = "State.District.ID"]
 
 dci.joined.dt <- dci.districts.dt[joined.dt, on = c("State.District.ID", "currentSchoolYear" = "YEAR"), nomatch = NA]
@@ -74,12 +78,22 @@ dci.joined.dt[, PROFICIENT_PCT := ifelse(is.na(PROFICIENT_PCT), 0, PROFICIENT_PC
 started.2019 <- selected.year[currentSchoolYear == 2019 & State.District.ID %in% dci.districts.2021$State.District.ID]
 started.2020 <- selected.year[currentSchoolYear == 2020 & State.District.ID %in% dci.districts.2021$State.District.ID]
 
-other.dci.districts.2019 <- selected.year[!State.District.ID %in% started.2019$State.District.ID]
-other.dci.districts.2020 <- selected.year[!State.District.ID %in% started.2020$State.District.ID]
+other.dci.districts.2019 <- selected.year[
+  !State.District.ID %in% started.2019$State.District.ID
+  & !State.District.ID %in% all.dci.districts
+  ]
+other.dci.districts.2020 <- selected.year[
+  !State.District.ID %in% started.2020$State.District.ID
+  & !State.District.ID %in% all.dci.districts
+  ]
 
 # Schools that started in 2019 are 1 year
+# These are schools that started in fall 2018, and then reported in this data 
+# as the year 2019
 print(table(unique(dci.joined.dt[currentSchoolYear == 2019, .(year.in.program, State.District.ID)])$year.in.program))
 # Schools that started in 2020 are 1 year
+# These are schools that started in fall 2019, and then reported in this data 
+# as the year 2020
 print(table(unique(dci.joined.dt[currentSchoolYear == 2020, .(year.in.program, State.District.ID)])$year.in.program))
 
 
@@ -87,7 +101,7 @@ print(table(unique(dci.joined.dt[currentSchoolYear == 2020, .(year.in.program, S
 
 
 ```{r}
-dci.joined.dt <- dci.joined.dt[GRADE_LEVEL == 3 & CONTENT_AREA == "Eng. Language Arts"]
+dci.joined.dt <- dci.joined.dt[GRADE_LEVEL == 3 & CONTENT_AREA == "Eng. Language Arts" & State.District.ID %in% iep.reported.2021.districts]
 dci.joined.dt[, prop.iep := REPORTABLE / Enroll]
 dci.joined.dt <- dci.joined.dt[!is.infinite(prop.iep)]
 
@@ -185,27 +199,56 @@ matched.summary.dt <- matched.cohorts.dt[, unlist(recursive = F, lapply(
 
 write.csv(matched.summary.dt, file = "./Data Sources CSV/Matching/summary_different_methods.csv")
 write.csv(matched.cohorts.dt, file = "./Data Sources CSV/Matching/matching_results.csv")
+
+# get matched pairs, order by distance and cbind the tables together
+treated.c2.dt <- matched.cohorts.dt[cohort == 2 & treated == T, .(State.District.ID, distance)]
+untreated.c2.dt <- matched.cohorts.dt[cohort == 2 & treated == F & is.na(extra.var), .(State.District.ID, distance)]
+
+treated.c2.dt <- treated.c2.dt[order(distance)]
+untreated.c2.dt <- untreated.c2.dt[order(distance)]
+
+setnames(treated.c2.dt, "State.District.ID", "Treated.District.ID")
+setnames(untreated.c2.dt, "State.District.ID", "Matched.District.ID")
+
+
+treated.c3.dt <- matched.cohorts.dt[cohort == 3 & treated == T, .(State.District.ID, distance)]
+untreated.c3.dt <- matched.cohorts.dt[cohort == 3 & treated == F & is.na(extra.var), .(State.District.ID, distance)]
+
+treated.c3.dt <- treated.c3.dt[order(distance)]
+untreated.c3.dt <- untreated.c3.dt[order(distance)]
+
+setnames(treated.c3.dt, "State.District.ID", "Treated.District.ID")
+setnames(untreated.c3.dt, "State.District.ID", "Matched.District.ID")
+
+
+c2.matched.districts <- cbind(treated.c2.dt, untreated.c2.dt)
+c3.matched.districts <- cbind(treated.c3.dt, untreated.c3.dt)
+
+write.csv(c2.matched.districts, "./Data Sources CSV/Matching/cohort_2_matched.csv")
+write.csv(c3.matched.districts, "./Data Sources CSV/Matching/cohort_3_matched.csv")
+
+print(t.test(matched.cohorts.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2 & is.na(extra.var)]$change))
+print(t.test(matched.cohorts.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3 & is.na(extra.var)]$change))
 ```
+        Welch Two Sample t-test
 
-Welch Two Sample t-test
-
-data:  matched.cohorts.dt[treated == T & cohort == 2]$change and matched.cohorts.dt[treated == F & cohort == 2]$change
-t = 1.5, df = 59.931, p-value = 0.1389
+data:  matched.cohorts.dt[treated == T & cohort == 2]$change and matched.cohorts.dt[treated == F & cohort == 2 & is.na(extra.var)]$change
+t = 0.1151, df = 57.017, p-value = 0.9088
 alternative hypothesis: true difference in means is not equal to 0
 95 percent confidence interval:
- -2.766547 19.354426
+ -11.13022  12.48780
 sample estimates:
 mean of x mean of y 
--1.596970 -9.890909 
+-1.596970 -2.275758 
 
 
-Welch Two Sample t-test
+        Welch Two Sample t-test
 
-data:  matched.cohorts.dt[treated == T & cohort == 3]$change and matched.cohorts.dt[treated == F & cohort == 3]$change
-t = -1.0001, df = 140.76, p-value = 0.319
+data:  matched.cohorts.dt[treated == T & cohort == 3]$change and matched.cohorts.dt[treated == F & cohort == 3 & is.na(extra.var)]$change
+t = -1.8441, df = 141.24, p-value = 0.06726
 alternative hypothesis: true difference in means is not equal to 0
 95 percent confidence interval:
- -12.573070   4.125754
+ -15.7501038   0.5473641
 sample estimates:
-mean of x mean of y 
--8.150685 -3.927027 
+ mean of x  mean of y 
+-8.1506849 -0.5493151 
