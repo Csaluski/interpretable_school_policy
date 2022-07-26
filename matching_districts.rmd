@@ -12,6 +12,11 @@ district.map.dt <- fread("Data Sources CSV/building_map_data/District MAP conten
 
 district.map.dt[, State.District.ID := paste0("MO-", str_pad(COUNTY_DISTRICT, 6, "left", "0"))]
 
+# This introduces NA for any grade outside 03 to 08. This is appropriate for
+# this analysis, as we are not concerned with grades outside this range,
+# however this should be considered for other forms of analysis.
+district.map.dt[, GRADE_LEVEL := as.numeric(GRADE_LEVEL)]
+
 district.map.dt[, PROFICIENT_PCT := as.numeric(PROFICIENT_PCT)]
 district.map.dt[, PROFICIENT_PCT := ifelse(is.na(PROFICIENT_PCT), 0, PROFICIENT_PCT)]
 
@@ -52,9 +57,9 @@ selected.year <- unique(dci.districts.dt[year.in.program == 1, .(currentSchoolYe
 dci.districts.2021 <- dci.districts.dt[currentSchoolYear == 2021]
 
 
-dci.joined.dt[, Enroll := ENROLLMENT_GRADES_PK_12]
-dci.joined.dt[, Enroll := ENROLLMENT_GRADES_PK_12]
+dci.joined.dt[, Enroll := ENROLLMENT_GRADES_03]
 dci.joined.dt[, Enroll := as.numeric(Enroll)]
+dci.joined.dt[, Enroll := ifelse(is.na(Enroll), 0, Enroll)]
 dci.joined.dt[, FRL := LUNCH_COUNT_FREE_REDUCED_PCT]
 dci.joined.dt[, FRL := as.numeric(FRL)]
 dci.joined.dt[, FRL := ifelse(is.na(FRL), 0, FRL)]
@@ -82,7 +87,9 @@ print(table(unique(dci.joined.dt[currentSchoolYear == 2020, .(year.in.program, S
 
 
 ```{r}
-dci.joined.dt <- dci.joined.dt[GRADE_LEVEL == "03" & CONTENT_AREA == "Eng. Language Arts"]
+dci.joined.dt <- dci.joined.dt[GRADE_LEVEL == 3 & CONTENT_AREA == "Eng. Language Arts"]
+dci.joined.dt[, prop.iep := REPORTABLE / Enroll]
+dci.joined.dt <- dci.joined.dt[!is.infinite(prop.iep)]
 
 # cohort 2 started treatment in 2019, so 2018 is the year for the baseline
 dci.cohort2.dt <- dci.joined.dt[currentSchoolYear == 2018 & !State.District.ID %in% other.dci.districts.2019$State.District.ID] 
@@ -94,34 +101,74 @@ dci.cohort2.iep.dt <- dci.cohort2.dt[TYPE == "IEP Non MAPA"]
 dci.cohort3.dt <- dci.joined.dt[currentSchoolYear == 2019 & !State.District.ID %in% other.dci.districts.2020$State.District.ID]
 dci.cohort3.dt[, treated := State.District.ID %in% started.2020$State.District.ID]
 dci.cohort3.iep.dt <- dci.cohort3.dt[TYPE == "IEP Non MAPA"]
-
 ```
 
 ```{r}
-m.cohort2.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort2.iep.dt, method = "nearest", distance = "glm" )
+m.cohort2.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort2.iep.dt, method = "optimal", distance = "glm" )
 
-m.cohort3.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort3.iep.dt, method = "nearest", distance = "glm" )
+m.cohort3.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort3.iep.dt, method = "optimal", distance = "glm" )
+
+m.cohort2.report.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase + REPORTABLE, data = dci.cohort2.iep.dt, method = "optimal", distance = "glm" )
+
+m.cohort3.report.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase + REPORTABLE, data = dci.cohort3.iep.dt, method = "optimal", distance = "glm" )
+
+m.cohort2.iep.prop.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase + prop.iep, data = dci.cohort2.iep.dt, method = "optimal", distance = "glm" )
+
+m.cohort3.iep.prop.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase + prop.iep, data = dci.cohort3.iep.dt, method = "optimal", distance = "glm" )
 
 summary(m.cohort2.matched.out)
-matched.cohort2.districts.dt <- match.data(m.cohort2.matched.out)
+matched.cohort2.districts.dt <- match.data(m.cohort2.matched.out, group = "control")
 
 summary(m.cohort3.matched.out)
-matched.cohort3.districts.dt <- match.data(m.cohort3.matched.out)
+matched.cohort3.districts.dt <- match.data(m.cohort3.matched.out, group = "control")
+
+summary(m.cohort2.report.matched.out)
+matched.cohort2.report.districts.dt <- match.data(m.cohort2.report.matched.out, group = "control")
+
+summary(m.cohort3.report.matched.out)
+matched.cohort3.report.districts.dt <- match.data(m.cohort3.report.matched.out, group = "control")
+
+
+summary(m.cohort2.iep.prop.matched.out)
+matched.cohort2.iep.prop.districts.dt <- match.data(m.cohort2.iep.prop.matched.out, group = "control")
+
+summary(m.cohort3.iep.prop.matched.out)
+matched.cohort3.iep.prop.districts.dt <- match.data(m.cohort3.iep.prop.matched.out, group = "control")
+
+
+matched.cohort2.treated.dt <- match.data(m.cohort2.matched.out, group = "treated")
+matched.cohort3.treated.dt <- match.data(m.cohort3.matched.out, group = "treated")
 ```
 
 ```{r}
-matched.cohort3.districts.dt <- matched.cohort3.districts.dt[, .(State.District.ID, FRL, Enroll, nonwhitepercent, passratebase, treated, currentSchoolYear)]
+matched.cohort2.treated.dt[, cohort := 2]
+matched.cohort3.treated.dt[, cohort := 3]
+
+matched.cohort2.districts.dt[, cohort := 2]
 matched.cohort3.districts.dt[, cohort := 3]
 
-matched.cohort2.districts.dt <- matched.cohort2.districts.dt[, .(State.District.ID, FRL, Enroll, nonwhitepercent, passratebase, treated, currentSchoolYear)]
-matched.cohort2.districts.dt[, cohort := 2]
+matched.cohort2.report.districts.dt[, cohort := 2]
+matched.cohort3.report.districts.dt[, cohort := 3]
 
-matched.cohorts.dt <- rbind(matched.cohort2.districts.dt, matched.cohort3.districts.dt)
+matched.cohort2.iep.prop.districts.dt[, cohort := 2]
+matched.cohort3.iep.prop.districts.dt[, cohort := 3]
 
-```
+matched.cohort2.districts.dt[, extra.var := NA]
+matched.cohort3.districts.dt[, extra.var := NA]
 
-```{r}
-map.2021.result <- district.map.dt[YEAR == 2021 & TYPE == "IEP Non MAPA" & GRADE_LEVEL == "03" & CONTENT_AREA == "Eng. Language Arts"]
+matched.cohort2.report.districts.dt[, extra.var := "reportable"]
+matched.cohort3.report.districts.dt[, extra.var := "reportable"]
+
+matched.cohort2.iep.prop.districts.dt[, extra.var := "iep.prop"]
+matched.cohort3.iep.prop.districts.dt[, extra.var := "iep.prop"]
+
+matched.cohort2.treated.dt[, extra.var := NA]
+matched.cohort3.treated.dt[, extra.var := NA]
+
+
+matched.cohorts.dt <- rbind(matched.cohort2.treated.dt, matched.cohort3.treated.dt, matched.cohort2.districts.dt, matched.cohort3.districts.dt, matched.cohort2.report.districts.dt, matched.cohort3.report.districts.dt,matched.cohort2.iep.prop.districts.dt, matched.cohort3.iep.prop.districts.dt)
+
+map.2021.result <- district.map.dt[YEAR == 2021 & TYPE == "IEP Non MAPA" & GRADE_LEVEL == 3 & CONTENT_AREA == "Eng. Language Arts"]
 
 map.2021.result <- map.2021.result[State.District.ID %in% matched.cohorts.dt$State.District.ID]
 
@@ -134,13 +181,10 @@ matched.cohorts.dt[, change := passrate2021 - passratebase]
 matched.summary.dt <- matched.cohorts.dt[, unlist(recursive = F, lapply(
   .(mean = mean, sd = sd, sum = sum, count = length),
   function(f) lapply(.SD, f)
-)), by = c("treated", "cohort"), .SDcols = c("FRL", "Enroll", "nonwhitepercent", "passratebase", "passrate2021", "change")]
+)), by = c("treated", "cohort", "extra.var"), .SDcols = c("FRL", "nonwhitepercent", "passratebase", "passrate2021", "change", "Enroll", "REPORTABLE", "prop.iep")]
 
-write.csv(matched.summary.dt, file = "./Data Sources CSV/Matching/summary.csv")
-
-print(t.test(matched.cohorts.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2]$change))
-
-print(t.test(matched.cohorts.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3]$change))
+write.csv(matched.summary.dt, file = "./Data Sources CSV/Matching/summary_different_methods.csv")
+write.csv(matched.cohorts.dt, file = "./Data Sources CSV/Matching/matching_results.csv")
 ```
 
 Welch Two Sample t-test
