@@ -39,9 +39,9 @@ joined.dt <- joined.dt[YEAR == 2019 | YEAR == 2018 | YEAR == 2020]
 ```
 
 ```{r}
-dci.buildings.dt <- fread("Data Sources/DCI Data/Active Districts/Active_DCI_buildings_2017_2022.csv")
+dci.building.dt <- fread("Data Sources/DCI Data/Active Districts/Active_DCI_buildings_2017_2022.csv")
 
-dci.districts.dt <- unique(dci.buildings.dt[, .(State.District.ID, currentSchoolYear)])
+dci.districts.dt <- unique(dci.building.dt[, .(State.District.ID, currentSchoolYear)])
 
 dci.districts.dt <- dci.districts.dt[order(currentSchoolYear)]
 
@@ -80,11 +80,11 @@ started.2020 <- selected.year[currentSchoolYear == 2020 & State.District.ID %in%
 
 other.dci.districts.2019 <- selected.year[
   !State.District.ID %in% started.2019$State.District.ID
-  & !State.District.ID %in% all.dci.districts
+  & State.District.ID %in% all.dci.districts
   ]
 other.dci.districts.2020 <- selected.year[
   !State.District.ID %in% started.2020$State.District.ID
-  & !State.District.ID %in% all.dci.districts
+  & State.District.ID %in% all.dci.districts
   ]
 
 # Schools that started in 2019 are 1 year
@@ -229,6 +229,14 @@ write.csv(c3.matched.districts, "./Data Sources CSV/Matching/cohort_3_matched.cs
 
 print(t.test(matched.cohorts.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2 & is.na(extra.var)]$change))
 print(t.test(matched.cohorts.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3 & is.na(extra.var)]$change))
+
+inactive.dci.districts <- c("MO-084001", "MO-106004", "MO-058112", "MO-011079", "MO-023101", "MO-004106", "MO-069107", "MO-063067", "MO-004110", "MO-054041", "MO-078003", "MO-078013", "MO-078013", "MO-033090", "MO-033090", "MO-068073", "MO-018050", "MO-088080")
+
+
+print(inactive.dci.districts[which(inactive.dci.districts %in% treated.c2.dt$Treated.District.ID)])
+print(inactive.dci.districts[which(inactive.dci.districts %in% treated.c3.dt$Treated.District.ID)])
+which(inactive.dci.districts %in% c3.matched.districts$State.District.ID)
+
 ```
         Welch Two Sample t-test
 
@@ -252,3 +260,168 @@ alternative hypothesis: true difference in means is not equal to 0
 sample estimates:
  mean of x  mean of y 
 -8.1506849 -0.5493151 
+
+Building level matching, use yearly building level NCES data from Melvin, and yearly building level MAP data from `./Data Sources CSV/building_map_data/` files. ESSA data is building level as well. 
+
+Create 4 matched data sets, cohort 2 and 3, and ESSA/non-ESSA
+
+```{r}
+# COUNTY_DISTRICT and SCHOOL_CODE uniquely identify a building
+map.buildings.2018 <- fread("Data Sources CSV/building_map_data/Building MAP content area and grade all disag 2018.csv")
+map.buildings.19.21 <- fread("Data Sources CSV/building_map_data/Building MAP content area and grade all disag 2019-2021.csv")
+
+map.building.dt <- rbind(map.buildings.19.21, map.buildings.2018)
+
+map.building.dt[, 
+  State.School.ID := paste0("MO-", str_pad(COUNTY_DISTRICT, 6, "left", "0"), "-", SCHOOL_CODE, str_pad(COUNTY_DISTRICT, 6, "left", "0") )
+]
+
+map.building.dt[, PROFICIENT_PCT := as.numeric(PROFICIENT_PCT)]
+map.building.dt[, PROFICIENT_PCT := ifelse(is.na(PROFICIENT_PCT), 0, PROFICIENT_PCT)]
+
+map.building.dt[, ADVANCED_PCT := as.numeric(ADVANCED_PCT)]
+map.building.dt[, ADVANCED_PCT := ifelse(is.na(ADVANCED_PCT), 0, ADVANCED_PCT)]
+map.building.dt[, passratebase := PROFICIENT_PCT + ADVANCED_PCT]
+
+iep.reported.2021.schools <- unique(map.building.dt[GRADE_LEVEL == "03" & TYPE == "IEP Non MAPA" & YEAR == 2021]$State.School.ID)
+
+
+nces.demographic.dt <- data.table(read.xlsx("./Data Sources/NCES Demographic/Building Demographic Data 2006 to Current.xlsx"))
+nces.enrollment.dt <- data.table(read.xlsx("./Data Sources/NCES Demographic/Building Enrollment.xlsx"))
+
+nces.building.dt <- nces.demographic.dt[nces.enrollment.dt, on=c("COUNTY_DISTRICT_CODE", "SCHOOL_CODE", "YEAR", "DISTRICT_NAME", "SCHOOL_NAME"), nomatch = NULL]
+nces.building.dt <- nces.building.dt[YEAR == 2018 | YEAR == 2019 | YEAR == 2020]
+
+nces.building.dt[, 
+  State.School.ID := paste0("MO-", str_pad(COUNTY_DISTRICT_CODE, 6, "left", "0"), "-", SCHOOL_CODE, str_pad(COUNTY_DISTRICT_CODE, 6, "left", "0") )
+]
+
+joined.building.dt <- nces.building.dt[map.building.dt, on = c("YEAR", "State.School.ID"), nomatch = NULL]
+
+
+dci.building.dt <- fread("Data Sources/DCI Data/Active Districts/Active_DCI_buildings_2017_2022.csv")
+
+dci.building.dt <- unique(dci.building.dt[, .(State.School.ID, currentSchoolYear)])
+
+dci.building.dt <- dci.building.dt[order(currentSchoolYear)]
+
+all.dci.schools <- unique(dci.building.dt$State.School.ID)
+
+dci.building.dt[
+  ,
+  year.in.program := 1:nrow(.SD),
+  by = "State.School.ID"]
+
+dci.year.dt <- dci.building.dt[, .(year.in.program, currentSchoolYear, State.School.ID)]
+
+building.selected.year <- unique(dci.building.dt[year.in.program == 1, .(currentSchoolYear, State.School.ID)])
+
+dci.buildings.2021 <- dci.building.dt[currentSchoolYear == 2021]
+
+dci.building.dt <- dci.building.dt[joined.building.dt, on = c("State.School.ID", "currentSchoolYear" = "YEAR"), nomatch = NA]
+
+dci.building.dt[, Enroll := ENROLLMENT_GRADES_03]
+dci.building.dt[, Enroll := as.numeric(Enroll)]
+dci.building.dt[, Enroll := ifelse(is.na(Enroll), 0, Enroll)]
+dci.building.dt[, FRL := LUNCH_COUNT_FREE_REDUCED_PCT]
+dci.building.dt[, FRL := as.numeric(FRL)]
+dci.building.dt[, FRL := ifelse(is.na(FRL), 0, FRL)]
+
+dci.building.dt[, ENROLLMENT_WHITE_PCT := as.numeric(ENROLLMENT_WHITE_PCT)]
+dci.building.dt[, ENROLLMENT_WHITE_PCT := ifelse(is.na(ENROLLMENT_WHITE_PCT), 0, ENROLLMENT_WHITE_PCT)]
+dci.building.dt[, nonwhitepercent := 100 - ENROLLMENT_WHITE_PCT]
+
+dci.building.dt[, PROFICIENT_PCT := as.numeric(PROFICIENT_PCT)]
+dci.building.dt[, PROFICIENT_PCT := ifelse(is.na(PROFICIENT_PCT), 0, PROFICIENT_PCT)]
+
+
+buildings.started.2019 <- building.selected.year[currentSchoolYear == 2019 & State.School.ID %in% dci.buildings.2021$State.School.ID]
+buildings.started.2020 <- building.selected.year[currentSchoolYear == 2020 & State.School.ID %in% dci.buildings.2021$State.School.ID]
+
+other.dci.buildings.2019 <- building.selected.year[
+  !State.School.ID %in% buildings.started.2019$State.School.ID
+  & State.School.ID %in% all.dci.schools
+  ]
+other.dci.buildings.2020 <- building.selected.year[
+  !State.School.ID %in% buildings.started.2020$State.School.ID
+  & State.School.ID %in% all.dci.schools
+  ]
+
+# When we verify ESSA data load it here, then join to dci.building.dt and 
+# add boolean column, ESSA in year of selection.
+# This file is not part of our main existing data set, it was provided to us on
+# request
+essa.years.dt <- data.table(read.xlsx("./Data Sources/Building ESSA/Title 1 Schools 2018 - 2022.xlsx", sheet = "Title 1 Buildings", startRow = 5))
+essa.years.dt[, State.School.ID := paste0("MO-", str_pad(ACCTYDIS, 6, "left", "0"), "-", ACSCHOOL, str_pad(ACCTYDIS, 6, "left", "0"))]
+
+essa.year.in.program.dt <- dci.year.dt[
+  essa.years.dt, 
+  on = c("currentSchoolYear" = "ACYEAR" , "State.School.ID")]
+
+dci.building.dt <- essa.years.dt[dci.building.dt, on=c("State.School.ID", "ACYEAR" = "currentSchoolYear") ]
+dci.building.dt[, essa := ifelse(is.na(TITLE1), T, F)]
+# Then we'll take the 4 subsets to match on, and include REPORTABLE in the 
+# formula now apparently
+```
+
+```{r}
+dci.building.filtered.dt <- dci.building.dt[GRADE_LEVEL == "03" & CONTENT_AREA == "Eng. Language Arts" & State.School.ID %in% iep.reported.2021.schools & Enroll != 0]
+dci.building.filtered.dt[, prop.iep := REPORTABLE / Enroll]
+dci.building.filtered.dt <- dci.building.filtered.dt[!is.infinite(prop.iep)]
+
+# cohort 2 started treatment in 2019, so 2018 is the year for the baseline
+dci.building.cohort2.dt <- dci.building.filtered.dt[ACYEAR == 2018 & !State.School.ID %in% other.dci.buildings.2019$State.School.ID] 
+dci.building.cohort2.dt[, treated := State.School.ID %in% buildings.started.2019$State.School.ID]
+dci.building.cohort2.dt[, cohort := 2]
+
+dci.building.cohort2.iep.dt <- dci.building.cohort2.dt[TYPE == "IEP Non MAPA"]
+# get buildings that were labeled ESSA in same year as starting DCI, not in
+# baseline year
+dci.cohort2.essa.dt <- dci.building.cohort2.iep.dt[State.School.ID %in% essa.year.in.program.dt[currentSchoolYear == 2019]$State.School.ID]
+dci.cohort2.non.essa.dt <- dci.building.cohort2.iep.dt[!State.School.ID %in% essa.year.in.program.dt[currentSchoolYear == 2019]$State.School.ID]
+
+# cohort 3 started treatment in 2020, so 2019 is year for baseline
+dci.building.cohort3.dt <- dci.building.filtered.dt[ACYEAR == 2019 & !State.School.ID %in% other.dci.buildings.2020$State.School.ID]
+dci.building.cohort3.dt[, treated := State.School.ID %in% buildings.started.2020$State.School.ID]
+dci.building.cohort3.dt[, cohort := 3]
+dci.building.cohort3.iep.dt <- dci.building.cohort3.dt[TYPE == "IEP Non MAPA"]
+
+
+dci.cohort3.essa.dt <- dci.building.cohort3.iep.dt[State.School.ID %in% essa.year.in.program.dt[currentSchoolYear == 2020]$State.School.ID]
+dci.cohort3.non.essa.dt <- dci.building.cohort3.iep.dt[!State.School.ID %in% essa.year.in.program.dt[currentSchoolYear == 2020]$State.School.ID]
+```
+
+```{r}
+
+m.cohort2.essa.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort2.essa.dt, method = "optimal", distance = "glm" )
+
+m.cohort3.essa.matched.out <- matchit(treated ~ FRL + Enroll + nonwhitepercent + passratebase, data = dci.cohort3.essa.dt, method = "optimal", distance = "glm" )
+
+summary(m.cohort2.essa.matched.out)
+summary(m.cohort3.essa.matched.out)
+
+matched.cohort2.essa.dt <- match.data(m.cohort2.essa.matched.out)
+matched.cohort3.essa.dt <- match.data(m.cohort3.essa.matched.out)
+```
+
+```{r}
+matched.buildings.dt <- rbind(matched.cohort2.essa.dt, matched.cohort3.essa.dt)
+
+map.building.2021.result <- map.building.dt[YEAR == 2021 & TYPE == "IEP Non MAPA" & GRADE_LEVEL == "03" & CONTENT_AREA == "Eng. Language Arts"]
+
+map.building.2021.result <- map.building.2021.result[State.School.ID %in% matched.buildings.dt$State.School.ID]
+
+
+map.building.2021.result[, passrate2021 := passratebase]
+map.building.2021.result <- map.building.2021.result[, .(State.School.ID, passrate2021)]
+
+
+matched.buildings.dt <- matched.buildings.dt[map.building.2021.result, on = c("State.School.ID")]
+matched.buildings.dt[, change := passrate2021 - passratebase]
+
+matched.buildings.summary.dt <- matched.buildings.dt[, unlist(recursive = F, lapply(
+  .(mean = mean, sd = sd, sum = sum, count = length),
+  function(f) lapply(.SD, f)
+)), by = c("treated", "cohort"), .SDcols = c("FRL", "nonwhitepercent", "passratebase", "passrate2021", "change", "Enroll", "REPORTABLE", "prop.iep")]
+
+```
