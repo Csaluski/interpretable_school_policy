@@ -424,4 +424,31 @@ matched.buildings.summary.dt <- matched.buildings.dt[, unlist(recursive = F, lap
   function(f) lapply(.SD, f)
 )), by = c("treated", "cohort"), .SDcols = c("FRL", "nonwhitepercent", "passratebase", "passrate2021", "change", "Enroll", "REPORTABLE", "prop.iep")]
 
+
+print(t.test(matched.buildings.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2]$change))
+print(t.test(matched.buildings.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3 ]$change))
+
 ```
+
+        Welch Two Sample t-test
+
+data:  matched.buildings.dt[treated == T & cohort == 2]$change and matched.cohorts.dt[treated == F & cohort == 2]$change
+t = 0.87232, df = 141.33, p-value = 0.3845
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -4.209932 10.859410
+sample estimates:
+mean of x mean of y 
+-3.693443 -7.018182 
+
+
+        Welch Two Sample t-test
+
+data:  matched.buildings.dt[treated == T & cohort == 3]$change and matched.cohorts.dt[treated == F & cohort == 3]$change
+t = -0.93345, df = 238.55, p-value = 0.3515
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -8.635125  3.082702
+sample estimates:
+mean of x mean of y 
+-8.022330 -5.246119 
