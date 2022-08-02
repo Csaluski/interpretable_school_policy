@@ -428,6 +428,37 @@ matched.buildings.summary.dt <- matched.buildings.dt[, unlist(recursive = F, lap
 print(t.test(matched.buildings.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2]$change))
 print(t.test(matched.buildings.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3 ]$change))
 
+# Output the resulting data tables, and matched pairs of districts
+
+write.csv(matched.buildings.summary.dt, file = "./Data Sources CSV/Matching/summary_buildings_different_methods.csv")
+write.csv(matched.buildings.dt, file = "./Data Sources CSV/Matching/matching_building_results.csv")
+
+# get matched pairs, order by distance and cbind the tables together
+treated.c2.dt <- matched.buildings.dt[cohort == 2 & treated == T, .(State.School.ID, distance)]
+untreated.c2.dt <- matched.buildings.dt[cohort == 2 & treated == F, .(State.School.ID, distance)]
+
+treated.c2.dt <- treated.c2.dt[order(distance)]
+untreated.c2.dt <- untreated.c2.dt[order(distance)]
+
+setnames(treated.c2.dt, "State.School.ID", "Treated.School.ID")
+setnames(untreated.c2.dt, "State.School.ID", "Matched.School.ID")
+
+
+treated.c3.dt <- matched.buildings.dt[cohort == 3 & treated == T, .(State.School.ID, distance)]
+untreated.c3.dt <- matched.buildings.dt[cohort == 3 & treated == F, .(State.School.ID, distance)]
+
+treated.c3.dt <- treated.c3.dt[order(distance)]
+untreated.c3.dt <- untreated.c3.dt[order(distance)]
+
+setnames(treated.c3.dt, "State.School.ID", "Treated.School.ID")
+setnames(untreated.c3.dt, "State.School.ID", "Matched.School.ID")
+
+
+c2.matched.buildings <- cbind(treated.c2.dt, untreated.c2.dt)
+c3.matched.buildings <- cbind(treated.c3.dt, untreated.c3.dt)
+
+write.csv(c2.matched.buildings, "./Data Sources CSV/Matching/cohort_2_matched_buildings.csv")
+write.csv(c3.matched.buildings, "./Data Sources CSV/Matching/cohort_3_matched_buildings.csv")
 ```
 
         Welch Two Sample t-test
