@@ -2,7 +2,7 @@
 
 This repository contains R markdown notebooks with code used to create aggregations of data for analysis and then doing analysis of these sets.
 
-[First the data was processed and aggregated in `NCES pre-processing`.](NCES%20pre-processing.rmd) 
+[First the data was processed and aggregated in `DCI pre-processing`.](DCI%20pre-processing.rmd) 
 This joins several data sets together by date and school district, then aggregates interesting numeric variables by several summary statistic functions.
 
 [Then aggregation and summarization of the coaching logs](coaching_aggregation.Rmd) 
