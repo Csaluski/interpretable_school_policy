@@ -1,0 +1,173 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, DCI Involvement Scores"
+author: "Charles Saluski"
+# date: "8/4/2022"
+output: pdf_document
+---
+
+There are many approachs we could take to calculating how invovled a district is, taking into account the number of visits, duration of visits, and consistency of visits, as well as possible other metrics, such as number of visits per teacher, to account for school district size. 
+
+Check our scores against the 2022 IC self reported immersion levels, as kind of sanity check. These are factored into full immersion, partial immersion, and self guided immersion. The levels may need adjustment, but we could consider these as 1, 0.5, and 0. We can run our generated scores against these provided scores in a logression test to see if they are approximately accurate. 
+Create a model using every combination of products of variables, then optimize the parameters to generate best fit to our provided data set.
+
+
+```{r}
+library(data.table)
+library(mlr3)
+library(openxlsx)
+library(mlr3extralearners)
+library(mlr3learners)
+```
+
+```{r}
+cl.2022.loc <- "./Data Sources/DCI Data/Coaching Logs/CST Reporting Form 2021-22 (Responses)_08.04.22.xlsx"
+cl.2022.dt <- data.table(read.xlsx(cl.2022.loc, sheet = "Condensed_df"))
+setnames(cl.2022.dt, "Date.of.Event/Visit", "Date")
+cl.2022.dt <- cl.2022.dt[, .(Date, Event.Duration, State.District.ID)]
+# Excel stores times and dates in decimal format, date times are days since
+# 1900-01-01 12:00 AM, while times are just the decimal part.
+cl.2022.dt[, Date := convertToDate(Date)]
+cl.2022.dt[, year.month := format(Date, "%Y-%m")]
+cl.2022.dt[, year := as.numeric(format(Date, "%Y"))]
+cl.2022.dt[, Event.Duration := Event.Duration * 24]
+
+nces.loc <- "./Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
+nces.dt <- data.table(read.xlsx(nces.loc))
+setnames(nces.dt, "Teachers*", "Teachers")
+# There are some NA teacher results, from schools where data is NA, or where
+# data is missing. Remove them so that they do not poison merged data.
+nces.dt[, Teachers := as.numeric(Teachers)]
+nces.dt <- nces.dt[!is.na(Teachers)]
+nces.dt[, total.teachers := sum(Teachers), by = State.District.ID]
+nces.dt <- unique(nces.dt[, State.District.ID, total.teachers])
+
+cl.2022.dt <- cl.2022.dt[nces.dt, nomatch = NULL, on=c("State.District.ID")]
+cl.2022.dt[, visit.per.teacher := length(.SD)/total.teachers, by = State.District.ID]
+cl.2022.dt[, duration.per.teacher := sum(Event.Duration)/total.teachers, by = State.District.ID]
+cl.2022.dt[, n.months.visited := length(unique(year.month)), by = State.District.ID]
+
+# We want a column of the product of every combination of variables, named
+# after the variables that make up that product
+
+# Have to use c around colnames here to convince it to return a plain vector of
+# characters instead of a reference to the data table's vector of characters,
+# since we are adding columns and that will cause combn to create columns
+# of nth powers of variables 
+table.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Date", "State.District.ID", "year.month", "year")])
+for (n in 1:length(table.cols)) {
+  combn(table.cols, n, simplify = F, function(selected.vars){
+    new.col.name <- paste(selected.vars, collapse = "_")
+    # make the text of the expression we want to use in with
+    new.col.op <- paste(selected.vars, collapse = "*")
+    # parse the text into an expression and eval that expression in the
+    # environment of the data table
+    res <- with(cl.2022.dt, eval(parse(text=new.col.op)))
+    cl.2022.dt[, paste(new.col.name) := res]
+  }
+  )
+}
+
+ic.2022.loc <- "./Data Sources/IC_schoolyear_2021_2022.xlsx"
+ic.2022.dt <- data.table(read.xlsx(ic.2022.loc))
+
+ic.2022.immersion <- ic.2022.dt[, .(District.ID, Immersion)]
+setnames(ic.2022.immersion, "District.ID", "State.District.ID")
+
+full.immersion <- c("Full Immersion with in-person coaching", "Full immersion with virtual coaching", "Full immersion with in-person coaching")
+partial.immersion <- c("Partial immersion", "Partial Immersion")
+
+cl.2022.dt <- cl.2022.dt[ic.2022.immersion, on = "State.District.ID"]
+cl.2022.dt[, Immersion := ifelse(Immersion %in% full.immersion, "Full", ifelse(Immersion %in% partial.immersion, "Partial", "Minimal"))]
+cl.2022.dt[, Immersion := as.factor(Immersion)]
+cl.2022.dt[, immersion.score := ifelse(Immersion == "Full", 1,
+  ifelse(Immersion == "Partial",0.5, 0))]
+
+# There are a couple districts from the immersion level set that are not present in other sets, and an "n/a" district, these are removed.
+cl.2022.dt <- cl.2022.dt[complete.cases(cl.2022.dt)]
+
+predict.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Date", "State.District.ID", "year.month", "year", "Immersion")])
+predict.classif.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Date", "State.District.ID", "year.month", "year", "immersion.score")])
+```
+
+```{r}
+set.seed(123)
+num.folds <- 10
+
+regr.task <- TaskRegr$new(id = "Immersion score", backend = cl.2022.dt[, ..predict.cols], target = "immersion.score")
+classif.task <- TaskClassif$new(id = "Immersion score", backend = cl.2022.dt[, ..predict.classif.cols], target = "Immersion")
+
+regr.learner.list <- list()
+regr.learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
+regr.learner.list[["regr.ctree"]] <- LearnerRegrCTree$new()
+# cv_glmnet returns 2 models, one with s1 and one with minimum
+regr.learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
+
+classif.learner.list <- list()
+classif.learner.list[["classif.ctree"]] <- LearnerClassifCTree$new()
+classif.learner.list[["classif.ctree"]]$param_set$values = list(maxdepth = 3)
+classif.learner.list[["classif.featureless"]] <- LearnerClassifFeatureless$new()
+
+resampling <- rsmp("cv", folds = num.folds)
+
+regr.benchmark.obj <- benchmark_grid(
+  # tasks, learners, and resamplings
+  # we'll only give a learner vector, same tasks and resamplings
+  task = list(regr.task),
+  learners = regr.learner.list,
+  resamplings = list(resampling)
+)
+
+classif.benchmark.obj <- benchmark_grid(
+  # tasks, learners, and resamplings
+  # we'll only give a learner vector, same tasks and resamplings
+  task = list(classif.task),
+  learners = classif.learner.list,
+  resamplings = list(resampling)
+)
+
+regr.benchmark.res <- benchmark(regr.benchmark.obj, store_models = TRUE)
+classif.benchmark.res <- benchmark(classif.benchmark.obj, store_models = TRUE)
+
+regr.measure <- msr("regr.mse")
+classif.measure <- msr("classif.bacc")
+
+regr.result.dt <- regr.benchmark.res$score(regr.measure)
+classif.result.dt <- classif.benchmark.res$score(classif.measure)
+```
+
+```{r}
+library(ggplot2)
+method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-mean), learner_id]
+result.dt[, Method := factor(learner_id, method.levels)]
+err.plot <- ggplot() +
+  geom_point(data = result.dt, aes(x = regr.mse, y = Method)) +
+  facet_grid(task_id ~ .)
+
+if (!dir.exists("./img_out/immersion_score/")) {
+  dir.create("./img_out/immersion_score/")
+}
+png(filename = "./img_out/immersion_score/method.loss.png", width = 6, height = 4, unit = "in", res = 200)
+print(err.plot)
+dev.off()
+```
+Regression trees prove to be the most effective, and this makes sense as we're effectively trying to put them into factors.
+```{r}
+# Should probably print out the confusion matrices of each result within 
+# classification tasks
+if (!dir.exists("./img_out/immersion_score/trees")) {
+  dir.create("./img_out/immersion_score/trees")
+}
+  dest <- "./img_out/immersion_score/trees/"
+  if (!dir.exists(dest)) {
+    dir.create(dest)
+  }
+  for (fold in 1:num.folds) {
+    curr.tree <- result.dt[learner_id == "regr.ctree" & iteration == fold]$learner[[1]]$model
+
+    filename <- paste(fold, "tree.png", sep = "_")
+    filename <- paste(dest, filename, sep = "/")
+    png(filename = filename, width = 20, height = 6, unit = "in", res = 200)
+    plot(curr.tree)
+    dev.off()
+  }
+```
