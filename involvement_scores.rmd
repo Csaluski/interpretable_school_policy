@@ -7,8 +7,7 @@ output: pdf_document
 
 There are many approachs we could take to calculating how invovled a district is, taking into account the number of visits, duration of visits, and consistency of visits, as well as possible other metrics, such as number of visits per teacher, to account for school district size. 
 
-Check our scores against the 2022 IC self reported immersion levels, as kind of sanity check. These are factored into full immersion, partial immersion, and self guided immersion. The levels may need adjustment, but we could consider these as 1, 0.5, and 0. We can run our generated scores against these provided scores in a logression test to see if they are approximately accurate. 
-Create a model using every combination of products of variables, then optimize the parameters to generate best fit to our provided data set.
+Check our scores against the 2022 IC self reported immersion levels, as kind of sanity check. These are factored into full immersion, partial immersion, and self guided immersion. This can clearly be treated as a classification problem, but regression methods may also prove valuable. The levels may need adjustment, but within a regression model we could consider these as 1, 0.5, and 0. 
 
 
 ```{r}
@@ -19,7 +18,20 @@ library(mlr3extralearners)
 library(mlr3learners)
 ```
 
+Create a data set using every combination of products of variables, then optimize learners to generate best fit to our provided data set.
 ```{r}
+year.month.to.school.year <- function(year.month.str) {
+  # we expect the input to be in "%Y-%m" format, so we can
+  # use exact substring extraction
+  year <- as.numeric(substr(year.month.str, 1, 4))
+  month <- as.numeric(substr(year.month.str, 6, 8))
+
+  if (month > 6) {
+    year <- year + 1
+  }
+  year
+}
+
 cl.2022.loc <- "./Data Sources/DCI Data/Coaching Logs/CST Reporting Form 2021-22 (Responses)_08.04.22.xlsx"
 cl.2022.dt <- data.table(read.xlsx(cl.2022.loc, sheet = "Condensed_df"))
 setnames(cl.2022.dt, "Date.of.Event/Visit", "Date")
@@ -28,7 +40,9 @@ cl.2022.dt <- cl.2022.dt[, .(Date, Event.Duration, State.District.ID)]
 # 1900-01-01 12:00 AM, while times are just the decimal part.
 cl.2022.dt[, Date := convertToDate(Date)]
 cl.2022.dt[, year.month := format(Date, "%Y-%m")]
-cl.2022.dt[, year := as.numeric(format(Date, "%Y"))]
+cl.2022.dt[, year := year.month.to.school.year(year.month)]
+# Make sure that we're only looking at reports for the 2022 school year
+cl.2022.dt <- cl.2022.dt[year == 2022]
 cl.2022.dt[, Event.Duration := Event.Duration * 24]
 
 nces.loc <- "./Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
@@ -42,9 +56,14 @@ nces.dt[, total.teachers := sum(Teachers), by = State.District.ID]
 nces.dt <- unique(nces.dt[, State.District.ID, total.teachers])
 
 cl.2022.dt <- cl.2022.dt[nces.dt, nomatch = NULL, on=c("State.District.ID")]
-cl.2022.dt[, visit.per.teacher := length(.SD)/total.teachers, by = State.District.ID]
-cl.2022.dt[, duration.per.teacher := sum(Event.Duration)/total.teachers, by = State.District.ID]
+cl.2022.dt[, total.duration := sum(Event.Duration), by=State.District.ID]
+cl.2022.dt[, teacher.inverse := 1/total.teachers]
+cl.2022.dt[, visit.n := length(.SD)/total.teachers, by = State.District.ID]
 cl.2022.dt[, n.months.visited := length(unique(year.month)), by = State.District.ID]
+
+# We are not interested in individual interactions, so we unique filter down to
+# the unique calculated aggregate statistics we're interested in
+cl.2022.dt <- unique(cl.2022.dt[, !c("Date", "Event.Duration", "year.month")])
 
 # We want a column of the product of every combination of variables, named
 # after the variables that make up that product
@@ -52,8 +71,8 @@ cl.2022.dt[, n.months.visited := length(unique(year.month)), by = State.District
 # Have to use c around colnames here to convince it to return a plain vector of
 # characters instead of a reference to the data table's vector of characters,
 # since we are adding columns and that will cause combn to create columns
-# of nth powers of variables 
-table.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Date", "State.District.ID", "year.month", "year")])
+# of nth powers of variables
+table.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("State.District.ID", "year")])
 for (n in 1:length(table.cols)) {
   combn(table.cols, n, simplify = F, function(selected.vars){
     new.col.name <- paste(selected.vars, collapse = "_")
@@ -91,7 +110,7 @@ predict.classif.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Dat
 
 ```{r}
 set.seed(123)
-num.folds <- 10
+num.folds <- 3
 
 regr.task <- TaskRegr$new(id = "Immersion score", backend = cl.2022.dt[, ..predict.cols], target = "immersion.score")
 classif.task <- TaskClassif$new(id = "Immersion score", backend = cl.2022.dt[, ..predict.classif.cols], target = "Immersion")
@@ -104,7 +123,11 @@ regr.learner.list[["regr.cv_glmnet"]] <- LearnerRegrCVGlmnet$new()
 
 classif.learner.list <- list()
 classif.learner.list[["classif.ctree"]] <- LearnerClassifCTree$new()
-classif.learner.list[["classif.ctree"]]$param_set$values = list(maxdepth = 3)
+# Should this be interpretable or not? Lower depth is easier to understand, but
+# might underfit. Is the objective to create a metric that can be understood
+# and applied by people, or to create a metric that is most accurate?
+classif.learner.list[["classif.ctree"]]$param_set$values = list(maxdepth = 8)
+classif.learner.list[["classif.cv_glmnet"]] <- LearnerClassifGlmnet$new()
 classif.learner.list[["classif.featureless"]] <- LearnerClassifFeatureless$new()
 
 resampling <- rsmp("cv", folds = num.folds)
@@ -129,7 +152,7 @@ regr.benchmark.res <- benchmark(regr.benchmark.obj, store_models = TRUE)
 classif.benchmark.res <- benchmark(classif.benchmark.obj, store_models = TRUE)
 
 regr.measure <- msr("regr.mse")
-classif.measure <- msr("classif.bacc")
+classif.measure <- msr("classif.ce")
 
 regr.result.dt <- regr.benchmark.res$score(regr.measure)
 classif.result.dt <- classif.benchmark.res$score(classif.measure)
@@ -150,7 +173,7 @@ png(filename = "./img_out/immersion_score/method.loss.png", width = 6, height = 
 print(err.plot)
 dev.off()
 ```
-Regression trees prove to be the most effective, and this makes sense as we're effectively trying to put them into factors.
+Regression trees prove to be the most effective regression method, this makes sense as we're effectively trying to put them into factors.
 ```{r}
 # Should probably print out the confusion matrices of each result within 
 # classification tasks
@@ -170,4 +193,9 @@ if (!dir.exists("./img_out/immersion_score/trees")) {
     plot(curr.tree)
     dev.off()
   }
+```
+
+```{r}
+
+
 ```
