@@ -1,0 +1,255 @@
+---
+title: "Interpretable Analysis of School Policy Decisions, Cleaning Coaching Duration and Generating Immersion Labels"
+author: "Charles Saluski"
+# date: "8/9/2022"
+output: html_document
+---
+
+```{r}
+library(data.table)
+library(mlr3)
+library(openxlsx)
+library(mlr3extralearners)
+library(mlr3learners)
+library(stringr)
+```
+
+The coaching logs from Fall 2017 to Spring 2021 have some duration events entered in incorrect manners, so we need to clean this data. 
+
+Through inspection, it was found that the erronous data can be divided into several classes, those being people who entered their duration as an integer number of hours, those who entered a string in the general form of "<decimal hours> hour/hours/hr/hrs/hh", those who entered a string in the general form of "<integer minutes> min/minutes/m", and those who entered a string in the general form of "<integer hours> hour/hours <integer minutes> minutes". We will process these main cases and then evaluate further individual edge cases.
+
+```{r}
+cl.loc <- "Data Sources/Coaching logs Fall 2017- Spring 2021.xlsx"
+
+cl.dt <- data.table(read.xlsx(cl.loc, sheet = "Condensed columns"))
+setnames(cl.dt, "Date.of.Event/Visit", "Date")
+setnames(cl.dt, "Duration.of.Event", "Duration")
+cl.dt <- cl.dt[, .(Date, Duration, State.District.ID)]
+# Using indicies will make it much easier to keep track of which elements are
+# being modified
+cl.dt$index <- 1:nrow(cl.dt)
+
+# Note that there are 25 rows from the original where there is no provided
+# duration at all, these may be entirely excluded or considered as 0, depending
+# on how 
+cl.dt <- cl.dt[!is.na(Duration)]
+
+# Excel stores times and dates in decimal format, date times are days since
+# 1900-01-01 12:00 AM, while times are just the decimal part.
+# Assume that entries less than 1 day of duration are correct, although this
+# could have issues with people who entered "0.5" to mean half an hour. I don't
+# know how we could effectively account for this.
+processing.dt <- cl.dt[
+  as.numeric(Duration) < 1 & !is.na(as.numeric(Duration))]
+processing.dt[, processed.duration := as.numeric(Duration)]
+processed.dt <- rbind(processing.dt)
+
+# Now treat entries where duration is a decimal greater than 1 as hours.
+# Note the division by 24 to get into Excel format, we will convert this back
+# into hours once all durations have been cleaned
+processing.dt <- cl.dt[!index %in% processed.dt$index]
+processing.dt[, processed.duration := as.numeric(Duration) / 24]
+processing.dt <- processing.dt[!is.na(processed.duration)]
+processed.dt <- rbind(processed.dt, processing.dt)
+
+# After these two steps most of the rows are dealt with, and we have around 400
+# left to deal with. There are 125 unique cases here, clearly too many to revise
+# by hand, so we will process them in the ways noted above, beginning with
+# "<integer hours> hour/hours <integer minutes> minutes",
+# as this will simplify some of the subsequent selections
+hour.min.match.pattern <- "([\\d+]) ?(?:hour|hours) ?(\\d+) ?(?:minutes|mnutes)"
+processing.dt <- cl.dt[!index %in% processed.dt$index]
+# Force the column to have the type of numeric but also all NA by default
+# because otherwise setting value to NA in the data table transformation
+# will set it to logical NA instead of numeric NA
+processing.dt$processed.duration <- 0
+processing.dt$processed.duration <- NA
+processing.dt[, processed.duration := {
+  match.res <-str_match(Duration, hour.min.match.pattern)
+  # if we got NAs then we didn't match, set to NA
+  if (!is.na(match.res[1])) {
+    hours <- as.numeric(match.res[2]) / 24
+    minutes <- as.numeric(match.res[3]) / (24 * 60)
+    dur <- hours + minutes
+  } else {
+    dur <- NA
+  }
+  dur
+}, by=index]
+processing.dt <- processing.dt[!is.na(processed.duration)]
+processed.dt <- rbind(processed.dt, processing.dt)
+
+# Now process "<decimal hours> hours/hrs/hour/hh/h/etc." cases
+decimal.hour.match.pattern <- "(\\d|\\d*?.\\d*?) ?(?:hours|Hours|hour|hrs|Hrs|hr|hh|h)"
+processing.dt <- cl.dt[!index %in% processed.dt$index]
+processing.dt$processed.duration <- 0
+processing.dt$processed.duration <- NA
+processing.dt[, processed.duration := {
+  match.res <-str_match(Duration, decimal.hour.match.pattern)
+  # if we got NAs then we didn't match, set to NA
+  if (!is.na(match.res[1])) {
+    dur <- as.numeric(match.res[2]) / 24
+  } else {
+    dur <- NA
+  }
+  dur
+}, by=index]
+processing.dt <- processing.dt[!is.na(processed.duration)]
+processed.dt <- rbind(processed.dt, processing.dt)
+# Now process "<integer minutes> minutes", and assume that the several
+# entries of ".<integer minutes> minutes" is a mistake and should not have the
+# period.
+int.min.match.pattern <- ".?(\\d) ?(?:minutes|Minutes|min)"
+processing.dt <- cl.dt[!index %in% processed.dt$index]
+processing.dt$processed.duration <- 0
+processing.dt$processed.duration <- NA
+processing.dt[, processed.duration := {
+  match.res <-str_match(Duration, int.min.match.pattern)
+  # if we got NAs then we didn't match, set to NA
+  if (!is.na(match.res[1])) {
+    dur <- as.numeric(match.res[2]) / (24 * 60)
+  } else {
+    dur <- NA
+  }
+  dur
+}, by=index]
+processing.dt <- processing.dt[!is.na(processed.duration)]
+processed.dt <- rbind(processed.dt, processing.dt)
+
+# Now there's a few that are in "hour:minute" format that Excel didn't recognize
+# itself aparently. Note that this pattern will match an empty first group by
+# design, but we need to account for that possibly empty string
+colon.time.match.pattern <- "(\\d*)?:(\\d+)"
+processing.dt <- cl.dt[!index %in% processed.dt$index]
+processing.dt$processed.duration <- 0
+processing.dt$processed.duration <- NA
+processing.dt[, processed.duration := {
+  match.res <-str_match(Duration, colon.time.match.pattern)
+  # if we got NAs then we didn't match, set to NA
+  if (!is.na(match.res[1])) {
+    hours <- as.numeric(match.res[2]) / 24
+    mins <- as.numeric(match.res[3]) / (24 * 60)
+    dur <- ifelse(is.na(hours), mins, hours + mins)
+  } else {
+    dur <- NA
+  }
+  dur
+}, by=index]
+processing.dt <- processing.dt[!is.na(processed.duration)]
+processed.dt <- rbind(processed.dt, processing.dt)
+
+# We're left with only 20 entries which are mostly weird edge cases from
+# bad input. We'll just account for these manually, as there is not enough
+# consistency with them to benefit from extraction patterns.
+processing.dt <- cl.dt[!index %in% processed.dt$index]
+# Assume a "day" is 8 hours
+processing.dt[Duration == "Full Day", processed.duration := (8 / 24)]
+processing.dt[Duration == "all day", processed.duration := (8 / 24)]
+processing.dt[Duration == "1/2 day", processed.duration := (4 / 24)]
+processing.dt[Duration == "2 .00", processed.duration := (2 / 24)]
+processing.dt[Duration == "2 .0", processed.duration := (2 / 24)]
+processing.dt[Duration == ",75", processed.duration := (.75 / 24)]
+processing.dt[Duration == "one hour", processed.duration := (1 / 24)]
+processing.dt[Duration == "l hour", processed.duration := (1 / 24)]
+processing.dt[Duration == "i hour", processed.duration := (1 / 24)]
+processing.dt[Duration == "1,0 hour", processed.duration := (1 / 24)]
+processing.dt[Duration == "4.0 in p.m.", processed.duration := (4 / 24)]
+processing.dt[Duration == "3 sessions at 1.5 each", processed.duration := ((3 * 1.5) / 24)]
+processing.dt[Duration == "4 sessions at 1.5", processed.duration := ((4 * 1.5) / 24)]
+processed.dt <- rbind(processed.dt, processing.dt)
+# and that's all of them! 
+```
+
+The data is now ready to be prepared for the machine learning model, where we engineer the variables we did in the other model so that we can apply the model.
+```{r}
+year.month.to.school.year <- function(year.month.str) {
+  # we expect the input to be in "%Y-%m" format, so we can
+  # use exact substring extraction
+  year <- as.numeric(substr(year.month.str, 1, 4))
+  month <- as.numeric(substr(year.month.str, 6, 8))
+
+  if (month > 6) {
+    year <- year + 1
+  }
+  year
+}
+
+# Excel stores times and dates in decimal format, date times are days since
+# 1900-01-01 12:00 AM, while times are just the decimal part.
+processed.dt[, Date := convertToDate(Date)]
+# A few people entered their dates entirely incorrectly
+processed.dt <- processed.dt[!is.na(Date)]
+processed.dt[, year.month := format(Date, "%Y-%m")]
+processed.dt[, year := sapply(year.month, year.month.to.school.year)]
+processed.dt[, Event.Duration := processed.duration * 24]
+
+# Assume that schools have minimal change in teacher numbers year over year,
+# so only load one year of data
+nces.loc <- "./Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
+nces.dt <- data.table(read.xlsx(nces.loc))
+setnames(nces.dt, "Teachers*", "Teachers")
+# There are some NA teacher results, from schools where data is NA, or where
+# data is missing. Remove them so that they do not poison merged data.
+nces.dt[, Teachers := as.numeric(Teachers)]
+nces.dt <- nces.dt[!is.na(Teachers)]
+
+# Possibility to overcount, if teacher is represented in multiple districts
+# this could lead to overcounting
+nces.dt[, total.teachers := sum(Teachers), by = State.District.ID]
+nces.dt <- unique(nces.dt[, State.District.ID, total.teachers])
+
+cl.dt <- processed.dt[nces.dt, nomatch = NULL, on=c("State.District.ID")]
+cl.dt[, total.duration := sum(Event.Duration), by=list(State.District.ID, year)]
+cl.dt[, teacher.inverse := 1/total.teachers]
+cl.dt[, visit.n := nrow(.SD), by=list(State.District.ID, year)]
+cl.dt[, n.months.visited := length(unique(year.month)), by=list(State.District.ID, year)]
+
+# We are not interested in individual interactions, so we unique filter down to
+# the unique calculated aggregate statistics we're interested in
+cl.dt <- unique(cl.dt[
+  , !c("Date", "processed.duration", "Event.Duration", "Duration", "year.month", "index")
+  ])
+
+# We want a column of the product of every combination of variables, named
+# after the variables that make up that product
+
+# Have to use c around colnames here to convince it to return a plain vector of
+# characters instead of a reference to the data table's vector of characters,
+# since we are adding columns and that will cause combn to create columns
+# of nth powers of variables
+table.cols <- c(colnames(cl.dt)[
+  !colnames(cl.dt) %in% c("State.District.ID", "year")
+  ])
+for (n in 1:length(table.cols)) {
+  combn(table.cols, n, simplify = F, function(selected.vars){
+    new.col.name <- paste(selected.vars, collapse = "_")
+    # make the text of the expression we want to use in with
+    new.col.op <- paste(selected.vars, collapse = "*")
+    # parse the text into an expression and eval that expression in the
+    # environment of the data table
+    res <- with(cl.dt, eval(parse(text=new.col.op)))
+    cl.dt[, paste(new.col.name) := res]
+  }
+  )
+}
+```
+
+Finally we can load the model and apply it to predict labels for the unlabeled data set.
+```{r}
+# Load the model we created in order to generate immersion level labels, read
+# and train on our truth data again (unsure why this is needed), and apply the
+# learner to the unlabeled data
+attach("./obj_out/immersion_classifier_model.RData")
+
+truth.dt <- fread("./Data Sources CSV/immersion.classification.csv")
+truth.dt[, Immersion := as.factor(Immersion)]
+truth.dt$V1 <- NULL
+
+immersion.task <- TaskClassif$new("immersion level", backend = truth.dt, target = "Immersion")
+best.learner$train(immersion.task)
+label.result <- best.learner$predict_newdata( cl.dt[, !c("State.District.ID")], immersion.task)
+result.dt <- cbind(as.data.table(label.result)[, .(response)], cl.dt[, .(State.District.ID, year)])
+setnames(result.dt, "response", "immersion")
+
+write.csv(result.dt, "./Data Sources CSV/generated.immersion.scores.csv")
+```

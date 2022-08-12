@@ -2,8 +2,14 @@
 title: "Interpretable Analysis of School Policy Decisions, DCI Involvement Scores"
 author: "Charles Saluski"
 # date: "8/4/2022"
-output: pdf_document
+output: html_document
 ---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+We believe that the immersion level of a district may have an impact on the ETLP result of teachers within that district, however this data is new as of 2022. To this end, we desire to classify previous coaching years into 
 
 There are many approachs we could take to calculating how invovled a district is, taking into account the number of visits, duration of visits, and consistency of visits, as well as possible other metrics, such as number of visits per teacher, to account for school district size. 
 
@@ -40,10 +46,18 @@ cl.2022.dt <- cl.2022.dt[, .(Date, Event.Duration, State.District.ID)]
 # 1900-01-01 12:00 AM, while times are just the decimal part.
 cl.2022.dt[, Date := convertToDate(Date)]
 cl.2022.dt[, year.month := format(Date, "%Y-%m")]
-cl.2022.dt[, year := year.month.to.school.year(year.month)]
-# Make sure that we're only looking at reports for the 2022 school year
-cl.2022.dt <- cl.2022.dt[year == 2022]
+# cl.2022.dt[, year := sapply(year.month, year.month.to.school.year)]
+# Here we look at all reported coaching from this log, as it is considered the 
+# log for the 21-22 school year. In applying this model, we will subset by year
+# cl.2022.dt <- cl.2022.dt[year == 2022]
 cl.2022.dt[, Event.Duration := Event.Duration * 24]
+
+# Correct special error cases that Melvin highlighted
+cl.2022.dt[Event.Duration == 9.5, Event.Duration := 7.5]
+cl.2022.dt[Event.Duration == 30, Event.Duration := 0.5]
+cl.2022.dt[Event.Duration == 45, Event.Duration := 0.75]
+cl.2022.dt[Event.Duration == 9.0, Event.Duration := 5.0]
+cl.2022.dt[Event.Duration == 8.5, Event.Duration := 5.5]
 
 nces.loc <- "./Data Sources/NCES Data - District-Building Characteristics/ncesdata_ECCDA30A NO HEADER.xlsx"
 nces.dt <- data.table(read.xlsx(nces.loc))
@@ -52,18 +66,22 @@ setnames(nces.dt, "Teachers*", "Teachers")
 # data is missing. Remove them so that they do not poison merged data.
 nces.dt[, Teachers := as.numeric(Teachers)]
 nces.dt <- nces.dt[!is.na(Teachers)]
+# Possibility to overcount, if teacher is represented in multiple districts
+# this could lead to overcounting
 nces.dt[, total.teachers := sum(Teachers), by = State.District.ID]
 nces.dt <- unique(nces.dt[, State.District.ID, total.teachers])
 
 cl.2022.dt <- cl.2022.dt[nces.dt, nomatch = NULL, on=c("State.District.ID")]
 cl.2022.dt[, total.duration := sum(Event.Duration), by=State.District.ID]
 cl.2022.dt[, teacher.inverse := 1/total.teachers]
-cl.2022.dt[, visit.n := length(.SD)/total.teachers, by = State.District.ID]
+cl.2022.dt[, visit.n := nrow(.SD), by = State.District.ID]
 cl.2022.dt[, n.months.visited := length(unique(year.month)), by = State.District.ID]
 
 # We are not interested in individual interactions, so we unique filter down to
 # the unique calculated aggregate statistics we're interested in
-cl.2022.dt <- unique(cl.2022.dt[, !c("Date", "Event.Duration", "year.month")])
+cl.2022.dt <- unique(cl.2022.dt[
+  , !c("Date", "Event.Duration", "year.month")
+  ])
 
 # We want a column of the product of every combination of variables, named
 # after the variables that make up that product
@@ -72,7 +90,9 @@ cl.2022.dt <- unique(cl.2022.dt[, !c("Date", "Event.Duration", "year.month")])
 # characters instead of a reference to the data table's vector of characters,
 # since we are adding columns and that will cause combn to create columns
 # of nth powers of variables
-table.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("State.District.ID", "year")])
+table.cols <- c(colnames(cl.2022.dt)[
+  !colnames(cl.2022.dt) %in% c("State.District.ID", "year")
+  ])
 for (n in 1:length(table.cols)) {
   combn(table.cols, n, simplify = F, function(selected.vars){
     new.col.name <- paste(selected.vars, collapse = "_")
@@ -92,28 +112,52 @@ ic.2022.dt <- data.table(read.xlsx(ic.2022.loc))
 ic.2022.immersion <- ic.2022.dt[, .(District.ID, Immersion)]
 setnames(ic.2022.immersion, "District.ID", "State.District.ID")
 
-full.immersion <- c("Full Immersion with in-person coaching", "Full immersion with virtual coaching", "Full immersion with in-person coaching")
+full.immersion <- c("Full Immersion with in-person coaching",
+  "Full immersion with virtual coaching",
+  "Full immersion with in-person coaching")
 partial.immersion <- c("Partial immersion", "Partial Immersion")
 
+# Convert to 3 immersion level factors, treat in-person and virtual coaching as
+# same factor
 cl.2022.dt <- cl.2022.dt[ic.2022.immersion, on = "State.District.ID"]
-cl.2022.dt[, Immersion := ifelse(Immersion %in% full.immersion, "Full", ifelse(Immersion %in% partial.immersion, "Partial", "Minimal"))]
+cl.2022.dt[, Immersion := ifelse(Immersion %in% full.immersion,
+  "Full",
+  ifelse(
+    Immersion %in% partial.immersion, "Partial", "Minimal"))]
 cl.2022.dt[, Immersion := as.factor(Immersion)]
 cl.2022.dt[, immersion.score := ifelse(Immersion == "Full", 1,
   ifelse(Immersion == "Partial",0.5, 0))]
 
-# There are a couple districts from the immersion level set that are not present in other sets, and an "n/a" district, these are removed.
+# There are a couple districts from the immersion level set that are not
+# present in other sets, and an "n/a" district, these are removed.
 cl.2022.dt <- cl.2022.dt[complete.cases(cl.2022.dt)]
 
-predict.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Date", "State.District.ID", "year.month", "year", "Immersion")])
-predict.classif.cols <- c(colnames(cl.2022.dt)[!colnames(cl.2022.dt) %in% c("Date", "State.District.ID", "year.month", "year", "immersion.score")])
+predict.cols <- c(colnames(cl.2022.dt)[
+  !colnames(cl.2022.dt)
+  %in% c("Date", "State.District.ID", "year.month", "year", "Immersion")])
+predict.classif.cols <- c(colnames(cl.2022.dt)[
+  !colnames(cl.2022.dt)
+  %in% c("Date", "State.District.ID", "year.month", "year", "immersion.score")])
 ```
 
 ```{r}
 set.seed(123)
 num.folds <- 3
 
-regr.task <- TaskRegr$new(id = "Immersion score", backend = cl.2022.dt[, ..predict.cols], target = "immersion.score")
-classif.task <- TaskClassif$new(id = "Immersion score", backend = cl.2022.dt[, ..predict.classif.cols], target = "Immersion")
+regr.task <- TaskRegr$new(
+  id = "Immersion score",
+  backend = cl.2022.dt[, ..predict.cols],
+  target = "immersion.score"
+  )
+
+classif.backend <- cl.2022.dt[, ..predict.classif.cols]
+write.csv(classif.backend, "./Data Sources CSV/immersion.classification.csv")
+
+classif.task <- TaskClassif$new(
+  id = "Immersion Factor",
+  backend = classif.backend,
+  target = "Immersion"
+  )
 
 regr.learner.list <- list()
 regr.learner.list[["regr.featureless"]] <- LearnerRegrFeatureless$new()
@@ -126,23 +170,23 @@ classif.learner.list[["classif.ctree"]] <- LearnerClassifCTree$new()
 # Should this be interpretable or not? Lower depth is easier to understand, but
 # might underfit. Is the objective to create a metric that can be understood
 # and applied by people, or to create a metric that is most accurate?
-classif.learner.list[["classif.ctree"]]$param_set$values = list(maxdepth = 8)
-classif.learner.list[["classif.cv_glmnet"]] <- LearnerClassifGlmnet$new()
+classif.learner.list[["classif.ctree"]]$param_set$values <- list(maxdepth = 8)
+# CVGlmnet has issues with small sample sizes, so we're not including it in
+# this analysis
+# classif.learner.list[["classif.cv_glmnet"]] <- LearnerClassifCVGlmnet$new()
+classif.learner.list[["classif.cforest"]] <- LearnerClassifCForest$new()
+classif.learner.list[["classif.xgboost"]] <- LearnerClassifXgboost$new()
 classif.learner.list[["classif.featureless"]] <- LearnerClassifFeatureless$new()
 
 resampling <- rsmp("cv", folds = num.folds)
 
 regr.benchmark.obj <- benchmark_grid(
-  # tasks, learners, and resamplings
-  # we'll only give a learner vector, same tasks and resamplings
   task = list(regr.task),
   learners = regr.learner.list,
   resamplings = list(resampling)
 )
 
 classif.benchmark.obj <- benchmark_grid(
-  # tasks, learners, and resamplings
-  # we'll only give a learner vector, same tasks and resamplings
   task = list(classif.task),
   learners = classif.learner.list,
   resamplings = list(resampling)
@@ -156,26 +200,30 @@ classif.measure <- msr("classif.ce")
 
 regr.result.dt <- regr.benchmark.res$score(regr.measure)
 classif.result.dt <- classif.benchmark.res$score(classif.measure)
+classif.result.dt[, .(learner_id, iteration, classif.ce)]
 ```
 
 ```{r}
 library(ggplot2)
-method.levels <- result.dt[, .(mean = mean(regr.mse)), by = learner_id][order(-mean), learner_id]
-result.dt[, Method := factor(learner_id, method.levels)]
+method.levels <- classif.result.dt[, .(mean = mean(classif.ce)), by = learner_id][order(-mean), learner_id]
+classif.result.dt[, Method := factor(learner_id, method.levels)]
 err.plot <- ggplot() +
-  geom_point(data = result.dt, aes(x = regr.mse, y = Method)) +
-  facet_grid(task_id ~ .)
+  geom_point(data = classif.result.dt, aes(x = classif.ce, y = Method)) +
+  facet_grid(task_id ~ .) +
+  xlab("Classification Error")
 
 if (!dir.exists("./img_out/immersion_score/")) {
   dir.create("./img_out/immersion_score/")
 }
-png(filename = "./img_out/immersion_score/method.loss.png", width = 6, height = 4, unit = "in", res = 200)
+png(filename = "./img_out/immersion_score/classif.error.png", width = 6, height = 4, unit = "in", res = 200)
 print(err.plot)
 dev.off()
+err.plot
 ```
-Regression trees prove to be the most effective regression method, this makes sense as we're effectively trying to put them into factors.
+
+
 ```{r}
-# Should probably print out the confusion matrices of each result within 
+# Should probably print out the confusion matrices of each result within
 # classification tasks
 if (!dir.exists("./img_out/immersion_score/trees")) {
   dir.create("./img_out/immersion_score/trees")
@@ -185,7 +233,7 @@ if (!dir.exists("./img_out/immersion_score/trees")) {
     dir.create(dest)
   }
   for (fold in 1:num.folds) {
-    curr.tree <- result.dt[learner_id == "regr.ctree" & iteration == fold]$learner[[1]]$model
+    curr.tree <- classif.result.dt[learner_id == "classif.ctree" & iteration == fold]$learner[[1]]$model
 
     filename <- paste(fold, "tree.png", sep = "_")
     filename <- paste(dest, filename, sep = "/")
@@ -196,6 +244,45 @@ if (!dir.exists("./img_out/immersion_score/trees")) {
 ```
 
 ```{r}
+table(cl.2022.dt$Immersion)
+# Prepare figure for best model, confusion matrices of test + full, and overall
+# classification error
+best.ctree <- classif.result.dt[learner_id == "classif.ctree" & classif.ce == min(classif.result.dt[learner_id == "classif.ctree"]$classif.ce)]
+best.ctree[, .(iteration, classif.ce, learner_id)]
+print(best.ctree$prediction[[1]]$confusion)
 
+best.ctree.full.predict <- best.ctree$learner[[1]]$predict(classif.task)
+print(best.ctree.full.predict$confusion)
 
+plot(best.ctree$learner[[1]]$model)
+
+best.model <- classif.result.dt[classif.ce == min(classif.result.dt$classif.ce)]
+best.model[, .(iteration, classif.ce, learner_id)]
+print(best.model$prediction[[1]]$confusion)
+
+best.full.predict <- best.model$learner[[1]]$predict(classif.task)
+print(best.full.predict$confusion)
+best.learner <- best.model$learner[[1]]
+if (!dir.exists("./obj_out/")) {
+  dir.create("./obj_out/")
+}
+save(best.learner, file = "./obj_out/immersion_classifier_model.RData", compress=T)
+```
+
+Look at which districts are misclassified, and see if there is a trend in their misclassification.
+
+```{r}
+cl.2022.w.predict.dt <- cbind(cl.2022.dt, as.data.table(best.full.predict))
+wrong.predict.dt <- cl.2022.w.predict.dt[
+  truth != response,
+  .(total.teachers, total.duration, visit.n, n.months.visited, truth, response)]
+# Most of these are misclassifications where I agree with the generated label,
+# especially "Partial" being classified as "Full" when there are many long and
+# consistent visits, or "Full" being classified as "Partial" when there are few
+# and shorter visits.
+wrong.predict.dt
+table(wrong.predict.dt[, .(response, truth)])
+# The only "Minimal" district classified as "Full" is one which had many visits
+# and a high duration, but in relatively fewer months.
+wrong.predict.dt[truth == "Minimal" & response == "Full"]
 ```
