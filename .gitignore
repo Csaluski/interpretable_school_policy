@@ -2,3 +2,8 @@
 /Data Sources CSV/*
 /animint_out/*
 .httr-oauth
+.local
+.config
+.vscode
+img_out
+obj_out
