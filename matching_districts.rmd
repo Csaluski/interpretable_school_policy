@@ -359,9 +359,8 @@ essa.year.in.program.dt <- dci.year.dt[
   on = c("currentSchoolYear" = "ACYEAR" , "State.School.ID")]
 
 dci.building.dt <- essa.years.dt[dci.building.dt, on=c("State.School.ID", "ACYEAR" = "currentSchoolYear") ]
-dci.building.dt[, essa := ifelse(is.na(TITLE1), T, F)]
 # Then we'll take the 4 subsets to match on, and include REPORTABLE in the 
-# formula now apparently
+# formula now
 ```
 
 ```{r}
@@ -425,8 +424,12 @@ matched.buildings.summary.dt <- matched.buildings.dt[, unlist(recursive = F, lap
 )), by = c("treated", "cohort"), .SDcols = c("FRL", "nonwhitepercent", "passratebase", "passrate2021", "change", "Enroll", "REPORTABLE", "prop.iep")]
 
 
-print(t.test(matched.buildings.dt[treated == T & cohort == 2]$change, matched.cohorts.dt[treated == F & cohort == 2]$change))
-print(t.test(matched.buildings.dt[treated == T & cohort == 3]$change, matched.cohorts.dt[treated == F & cohort == 3 ]$change))
+print(t.test(matched.buildings.dt[treated == T & cohort == 2]$change, matched.buildings.dt[treated == F & cohort == 2]$change))
+print(t.test(matched.buildings.dt[treated == T & cohort == 3]$change, matched.buildings.dt[treated == F & cohort == 3 ]$change))
+
+
+print(t.test(matched.buildings.dt[treated == T & cohort == 2]$change, matched.buildings.dt[treated == F & cohort == 2]$change, paired = T))
+print(t.test(matched.buildings.dt[treated == T & cohort == 3]$change, matched.buildings.dt[treated == F & cohort == 3 ]$change, paired = T))
 
 # Output the resulting data tables, and matched pairs of districts
 
@@ -463,23 +466,48 @@ write.csv(c3.matched.buildings, "./Data Sources CSV/Matching/cohort_3_matched_bu
 
         Welch Two Sample t-test
 
-data:  matched.buildings.dt[treated == T & cohort == 2]$change and matched.cohorts.dt[treated == F & cohort == 2]$change
-t = 0.87232, df = 141.33, p-value = 0.3845
+data:  matched.buildings.dt[treated == T & cohort == 2]$change and matched.buildings.dt[treated == F & cohort == 2]$change
+t = 1.3105, df = 117.42, p-value = 0.1926
 alternative hypothesis: true difference in means is not equal to 0
 95 percent confidence interval:
- -4.209932 10.859410
+ -2.891999 14.206753
 sample estimates:
 mean of x mean of y 
--3.693443 -7.018182 
+-3.693443 -9.350820 
 
 
         Welch Two Sample t-test
 
-data:  matched.buildings.dt[treated == T & cohort == 3]$change and matched.cohorts.dt[treated == F & cohort == 3]$change
-t = -0.93345, df = 238.55, p-value = 0.3515
+data:  matched.buildings.dt[treated == T & cohort == 3]$change and matched.buildings.dt[treated == F & cohort == 3]$change
+t = -1.9733, df = 203.31, p-value = 0.04982
 alternative hypothesis: true difference in means is not equal to 0
 95 percent confidence interval:
- -8.635125  3.082702
+ -12.40086040  -0.00496484
 sample estimates:
 mean of x mean of y 
--8.022330 -5.246119 
+-8.022330 -1.819417 
+
+
+        Paired t-test
+
+data:  matched.buildings.dt[treated == T & cohort == 2]$change and matched.buildings.dt[treated == F & cohort == 2]$change
+t = 1.5897, df = 60, p-value = 0.1171
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -1.461029 12.775783
+sample estimates:
+mean of the differences 
+               5.657377 
+
+
+        Paired t-test
+
+data:  matched.buildings.dt[treated == T & cohort == 3]$change and matched.buildings.dt[treated == F & cohort == 3]$change
+t = -1.837, df = 102, p-value = 0.06912
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -12.9003305   0.4945052
+sample estimates:
+mean of the differences 
+              -6.202913 
+
